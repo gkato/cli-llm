@@ -1,0 +1,132 @@
+# Qwen3.5-9B QLoRA fine-tuning on RTX PRO 4500 Blackwell (32 GB).
+#
+# REQUIRED parameter:
+#   DATASET=<path to .jsonl>     input dataset with {messages: [user, assistant]}
+#
+# OPTIONAL parameters (with defaults):
+#   ADAPTER_NAME=<name>          output adapter name (default: qwen3.5-9b-001)
+#   MAX_SEQ_LEN=<int>            token cap per sample (default: 20480)
+#   EPOCHS=<int>                 training epochs (default: 3)
+#   RANK=<int>                   LoRA rank (default: 16)
+#   LR=<float>                   learning rate (default: 2e-4)
+#   BATCH_SIZE=<int>             micro-batch (default: 1)
+#   GRAD_ACCUM=<int>             gradient accumulation steps (default: 8)
+#
+# Pipeline:
+#   make -f Makefile.qwen9b report  DATASET=path/to/seed.jsonl
+#   make -f Makefile.qwen9b filter  DATASET=path/to/seed.jsonl
+#   make -f Makefile.qwen9b smoke   DATASET=path/to/seed.jsonl
+#   make -f Makefile.qwen9b train   DATASET=path/to/seed.jsonl ADAPTER_NAME=my-ft-001
+#   make -f Makefile.qwen9b all     DATASET=path/to/seed.jsonl ADAPTER_NAME=my-ft-001
+#
+# VRAM at max_seq_len=20480, batch=1, grad_accum=8:
+#   - 4-bit base weights:        ~5.5 GB
+#   - LoRA + 8-bit optim states: <0.5 GB
+#   - Activations (Unsloth GC):  ~24-26 GB
+#   - total peak:                ~30-32 GB  ⚠ edge of OOM, smoke test required
+#
+# If smoke OOMs:
+#   - lower MAX_SEQ_LEN (try 18432 or 16384) and re-filter
+#   - or restructure dataset to extract shared system prompt from user msg
+
+DATASET      ?=
+ADAPTER_NAME ?= qwen3.5-9b-001
+BASE_MODEL   ?= Qwen/Qwen3.5-9B
+MAX_SEQ_LEN  ?= 20480
+EPOCHS       ?= 3
+RANK         ?= 16
+LR           ?= 2e-4
+BATCH_SIZE   ?= 1
+GRAD_ACCUM   ?= 8
+SAVE_EVERY   ?= 40    # ~1 checkpoint per epoch for 100-step runs
+
+# Derived: place filtered output next to input with `_train` suffix.
+TRAIN_SET    := $(basename $(DATASET))_train.jsonl
+ADAPTER_DIR  := data/adapters/$(ADAPTER_NAME)
+
+.PHONY: check report filter smoke train serve all _require_dataset
+
+_require_dataset:
+	@test -n "$(DATASET)" || (echo "ERROR: pass DATASET=<path-to-jsonl>" && exit 1)
+
+check: _require_dataset
+	@echo "== Pre-flight =="
+	@test -f $(DATASET) || (echo "Missing dataset at $(DATASET)" && exit 1)
+	@echo "✓ dataset:     $(DATASET)"
+	@echo "✓ adapter:     $(ADAPTER_NAME)"
+	@echo "✓ max_seq_len: $(MAX_SEQ_LEN)"
+	@python3 -c "import torch, transformers, unsloth, trl; \
+		print('✓ deps installed (torch', torch.__version__, ')')"
+
+# Report-only: tokenize and print stats; no file written.
+report: check
+	@echo "== Tokenization report ($(BASE_MODEL) tokenizer) =="
+	python3 -m ml.distill_token_filter \
+		--input       $(DATASET) \
+		--output      /tmp/discard.jsonl \
+		--base        $(BASE_MODEL) \
+		--max-tokens  $(MAX_SEQ_LEN) \
+		--report-only
+
+filter: check $(TRAIN_SET)
+
+# File rule: produce the filtered training set from the seed dataset.
+# This lets `train` and `smoke` auto-trigger `filter` if TRAIN_SET is missing.
+$(TRAIN_SET): $(DATASET)
+	@echo "== Step 1: token-cap $(DATASET) to $(MAX_SEQ_LEN) tokens =="
+	python3 -m ml.distill_token_filter \
+		--input       $(DATASET) \
+		--output      $(TRAIN_SET) \
+		--base        $(BASE_MODEL) \
+		--max-tokens  $(MAX_SEQ_LEN)
+
+# Smoke: 3 longest records, 1 epoch — confirms VRAM at max length.
+smoke: $(TRAIN_SET)
+	@echo "== Smoke test (3 records, 1 epoch) =="
+	python3 -m ml.distill_train_unsloth \
+		--dataset      $(TRAIN_SET) \
+		--adapter-name $(ADAPTER_NAME)-smoke \
+		--base         $(BASE_MODEL) \
+		--epochs       1 \
+		--limit        3 \
+		--rank         $(RANK) \
+		--lr           $(LR) \
+		--max-seq-len  $(MAX_SEQ_LEN) \
+		--batch-size   1 \
+		--grad-accum   1
+
+train: $(TRAIN_SET)
+	@echo "== QLoRA fine-tune $(BASE_MODEL) =="
+	@echo "  Adapter:       $(ADAPTER_NAME)"
+	@echo "  Train set:     $(TRAIN_SET)"
+	@echo "  max_seq_len:   $(MAX_SEQ_LEN)"
+	@echo "  epochs:        $(EPOCHS)"
+	@echo "  rank:          $(RANK)"
+	@echo "  lr:            $(LR)"
+	@echo "  bs × accum:    $(BATCH_SIZE) × $(GRAD_ACCUM)"
+	@echo ""
+	@echo "  Stop the inference server first to free VRAM:"
+	@echo "    python3 -m ml.cli stop"
+	@read -p "  Press Enter to start training (Ctrl+C to abort)..." _
+	python3 -m ml.distill_train_unsloth \
+		--dataset      $(TRAIN_SET) \
+		--adapter-name $(ADAPTER_NAME) \
+		--base         $(BASE_MODEL) \
+		--epochs       $(EPOCHS) \
+		--rank         $(RANK) \
+		--lr           $(LR) \
+		--max-seq-len  $(MAX_SEQ_LEN) \
+		--batch-size   $(BATCH_SIZE) \
+		--grad-accum   $(GRAD_ACCUM) \
+		--save-every   $(SAVE_EVERY)
+
+serve:
+	@echo "== Serve base $(BASE_MODEL) with adapter $(ADAPTER_NAME) =="
+	@echo "  Add an entry to registry/models.yaml with:"
+	@echo "    loras:"
+	@echo "      - name: $(ADAPTER_NAME)"
+	@echo "        path: $(ADAPTER_DIR)"
+	@echo "        rank: $(RANK)"
+	@echo "  Then: python3 -m ml.cli serve <alias>"
+
+all: filter train

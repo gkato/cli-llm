@@ -1,0 +1,34 @@
+# Core inference (vLLM brings its own torch + transformers).
+# Qwen 3.5 needs vLLM ≥ 0.21 (the `qwen3_5` model type was added there),
+# which in turn requires CUDA 13 / driver ≥ 580. If your pod has an older
+# driver (e.g. RunPod stock RTX hosts on driver 12.4-12.8), pin vllm==0.10.2
+# and use a Qwen 3 model instead — Qwen 3.5 will not load on those.
+#
+# NOTE: This file is the x86_64 path. On NVIDIA GB10 / DGX Spark (aarch64),
+# setup.sh installs a different set — Unsloth and flash-attn don't ship
+# ARM64 wheels. The GB10 training path uses `ml/distill_train_hf.py`
+# (HF + PEFT + TRL, no Unsloth).
+#
+# Gemma 4 12B-IT bf16 (gemma4_unified arch) needs a vLLM that includes the
+# cuda-graph shape-mismatch fix (the `--enforce-eager` workaround was for
+# 0.21.0). Left unpinned to pick up the fix — use a current release.
+vllm
+huggingface-hub
+hf-transfer
+
+# CLI + config
+click
+pyyaml
+python-dotenv
+requests
+
+# Optional: fine-tuning stack (only needed if you run `ml-compute train`)
+# Uncomment to enable training support:
+# torch
+# transformers
+# peft
+# trl
+# datasets
+# accelerate
+# bitsandbytes
+# unsloth @ git+https://github.com/unslothai/unsloth.git  # x86_64 only

@@ -1,0 +1,13 @@
+data/
+.env.local
+__pycache__/
+*.pyc
+*.pyo
+venv/
+.venv/
+*.log
+.DS_Store
+.vscode/
+.idea/
+runs/
+wandb/

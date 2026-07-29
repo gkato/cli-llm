@@ -1,0 +1,5 @@
+datasets:
+  my_sft_v1:
+    path: data/datasets/my_sft_v1.jsonl
+    format: alpaca           # rows must contain: instruction, output (optional: input)
+    split: [0.9, 0.05, 0.05] # train / val / test

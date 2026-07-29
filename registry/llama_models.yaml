@@ -1,0 +1,75 @@
+# llama.cpp (GGUF) model registry.
+#
+# Each entry maps a short alias to a GGUF model served by `llama-server`.
+# Point your client at the URL printed by `ml.cli status` and call
+# /v1/chat/completions exactly like vLLM or NIM.
+#
+# Requires the llama.cpp `llama-server` binary on PATH. Build with CUDA:
+#     cmake -B build -DGGML_CUDA=ON && cmake --build build --config Release
+#     export PATH="$PWD/build/bin:$PATH"   # exposes llama-server
+# or `brew install llama.cpp` on macOS (Metal).
+#
+# Run a registered alias:        ml.cli serve llama qwen3.5-4b-gguf
+# Run any HF GGUF repo directly: ml.cli serve llama bartowski/Qwen2.5-7B-Instruct-GGUF:Q4_K_M
+# Run a local file:              ml.cli serve llama /path/to/model.gguf
+#
+# Conventions:
+#   - `hf_repo`       — HuggingFace GGUF repo, optionally `repo:QUANT`
+#                       (llama.cpp downloads + caches it via `-hf`).
+#   - `gguf_path`     — absolute path to a local .gguf file instead of hf_repo.
+#   - `n_gpu_layers`  — layers to offload to GPU (999 = all; 0 = CPU only).
+#   - `ctx_size`      — context window in tokens.
+#   - `served_name`   — what clients pass as the `model` field
+#                       (defaults to the alias).
+#   - `threads`       — CPU threads (defaults to llama.cpp's auto).
+#   - `extra_args`    — raw llama-server flags (list of strings).
+
+llama_models:
+  qwen3.5-4b-gguf:
+    hf_repo: bartowski/Qwen2.5-7B-Instruct-GGUF:Q4_K_M
+    n_gpu_layers: 999
+    ctx_size: 32768
+    served_name: Qwen/Qwen2.5-7B-Instruct
+    description: Qwen2.5 7B Instruct, Q4_K_M — small GGUF smoke-test model
+
+  llama3.1-8b-gguf:
+    hf_repo: bartowski/Meta-Llama-3.1-8B-Instruct-GGUF:Q4_K_M
+    n_gpu_layers: 999
+    ctx_size: 32768
+    served_name: meta-llama/Llama-3.1-8B-Instruct
+    description: Llama 3.1 8B Instruct, Q4_K_M
+
+  gemma4-12b-coder-q8:
+    # Local file path (this box's HF cache). Used because the local llama.cpp
+    # build lacks HTTPS, so `-hf` auto-download is unavailable. Once llama.cpp
+    # is rebuilt with -DLLAMA_OPENSSL=ON, swap back to the portable form:
+    #   hf_repo: yuxinlu1/gemma-4-12B-coder-fable5-composer2.5-v1-GGUF:Q8_0
+    gguf_path: /home/totalpass/.cache/huggingface/hub/models--yuxinlu1--gemma-4-12B-coder-fable5-composer2.5-v1-GGUF/snapshots/1cf281b0e9874a09b3de3cd075c92ecbf99f723c/gemma4-coding-Q8_0.gguf
+    n_gpu_layers: 999
+    ctx_size: 262144
+    served_name: gemma-4-12b-coder
+    description: Gemma 4 12B coder (fable5-composer2.5-v1), Q8_0 8-bit GGUF (~13GB)
+    # NOTE: no tool/function calling — direct code-gen & chat only, NOT for
+    # agentic tools (opencode/aider). Model-card sampling is mandatory or it
+    # degenerates into repetition. KV at q8_0 to fit large context.
+    extra_args:
+      - --temp
+      - "1.0"
+      - --top-p
+      - "0.95"
+      - --top-k
+      - "64"
+      - --cache-type-k
+      - q8_0
+      - --cache-type-v
+      - q8_0
+
+  # Agentic coder for opencode/aider — mainstream template, real tool calling.
+  qwen2.5-coder-32b:
+    hf_repo: bartowski/Qwen2.5-Coder-32B-Instruct-GGUF:Q8_0
+    n_gpu_layers: 999
+    ctx_size: 32768
+    served_name: qwen2.5-coder-32b
+    description: Qwen2.5-Coder 32B Instruct, Q8_0 (~35GB) — tool calling for opencode
+    extra_args:
+      - --jinja   # OpenAI-compatible tool/function calling (works on this template)

@@ -1,0 +1,80 @@
+# Distillation pipeline runner.
+#
+# Usage:
+#   make -f Makefile.distill clean-data    # 1. clean the seed export
+#   make -f Makefile.distill synth         # 2. expand with synthetic variants (~30 min)
+#   make -f Makefile.distill train         # 3. QLoRA training (~30-60 min)
+#   make -f Makefile.distill eval          # 4. evaluate the trained adapter
+#   make -f Makefile.distill all           # do all steps in order
+
+ADAPTER_NAME ?= v12-gemma4-distill-001
+SEED_EXPORT ?= data/datasets/Merged_Prompt_V12_-__SFT_-_Gemma4-31b-awq-messages.jsonl
+SEED_CLEAN  ?= data/datasets/distill_seed_clean.jsonl
+TRAIN_SET   ?= data/datasets/distill_train.jsonl
+SHORT_PROMPT ?= data/prompts/V12_distill_short.txt
+FAILURE_LIST ?= data/datasets/gemma_failures.txt
+BASE_MODEL ?= google/gemma-4-31B-it
+ADAPTER_DIR := data/adapters/$(ADAPTER_NAME)
+
+.PHONY: clean-data synth train eval all check
+
+check:
+	@echo "== Pre-flight =="
+	@test -f $(SEED_EXPORT) || (echo "Missing seed export at $(SEED_EXPORT)" && exit 1)
+	@test -f $(SHORT_PROMPT) || (echo "Missing short prompt at $(SHORT_PROMPT)" && exit 1)
+	@echo "✓ seed export:  $(SEED_EXPORT)"
+	@echo "✓ short prompt: $(SHORT_PROMPT)"
+	@python3 -c "import torch, transformers, peft, trl, bitsandbytes; print('✓ training deps installed')"
+	@python3 -c "import os; assert os.environ.get('HF_TOKEN'), 'set HF_TOKEN'" || \
+	  echo "⚠  HF_TOKEN not set — needed to download Gemma 4 base"
+
+clean-data: check
+	@echo "== Step 1: clean the seed dataset =="
+	python3 -m ml.distill_clean \
+		--input  $(SEED_EXPORT) \
+		--output $(SEED_CLEAN) \
+		--system $(SHORT_PROMPT) \
+		--max-user-chars 160000
+
+synth: $(SEED_CLEAN)
+	@echo "== Step 2: synthetic expansion via Gemini =="
+	@test -n "$$GEMINI_API_KEY" || (echo "Set GEMINI_API_KEY before running" && exit 1)
+	python3 -m ml.distill_synth \
+		--input         $(SEED_CLEAN) \
+		--output        $(TRAIN_SET) \
+		--pass-variants 4 \
+		--fail-variants 12 \
+		$(if $(wildcard $(FAILURE_LIST)), --failure-cases $(FAILURE_LIST))
+
+train: $(TRAIN_SET)
+	@echo "== Step 3: QLoRA training Gemma 4 31B =="
+	@echo "  This will use ~30 GB VRAM. Stop vLLM first:"
+	@echo "    python3 -m ml.cli stop"
+	@read -p "Press Enter to continue (Ctrl+C to abort)..." _
+	python3 -m ml.distill_train \
+		--dataset      $(TRAIN_SET) \
+		--adapter-name $(ADAPTER_NAME) \
+		--base         $(BASE_MODEL) \
+		--epochs       3 \
+		--rank         16 \
+		--lr           2e-4 \
+		--max-seq-len  8192
+
+eval: $(ADAPTER_DIR)/adapter_config.json
+	@echo "== Step 4: evaluate trained adapter =="
+	python3 -m ml.distill_eval \
+		--eval-set $(SEED_CLEAN) \
+		--adapter  $(ADAPTER_DIR) \
+		--base     $(BASE_MODEL)
+
+all: clean-data synth train eval
+
+# Helpers
+re-eval:
+	python3 -m ml.distill_eval \
+		--eval-set $(SEED_CLEAN) \
+		--adapter  $(ADAPTER_DIR) \
+		--base     $(BASE_MODEL)
+
+show-failures:
+	@cat $(ADAPTER_DIR)/eval_failures.txt 2>/dev/null || echo "No failures file yet — run eval first"

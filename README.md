@@ -1,0 +1,557 @@
+# ml-compute
+
+Local LLM inference and fine-tuning on your own hardware. Built for the **NVIDIA DGX Spark
+(GB10)** — Grace CPU + Blackwell GPU with 128 GB unified memory — and works on any local
+box with an NVIDIA GPU.
+
+One CLI, three serving backends, all speaking the same OpenAI-compatible `/v1` API:
+
+| Backend | Runs | Weights | Command |
+|---------|------|---------|---------|
+| **vLLM** | pip-installed Python process | safetensors (bf16 / FP8 / NVFP4 / AWQ) | `serve <alias>` |
+| **llama.cpp** | local `llama-server` binary | GGUF | `serve llama <id>` |
+| **NIM** | Docker container (TensorRT-LLM) | NVIDIA-packaged | `nim serve <alias>` |
+
+Plus a LoRA fine-tuning path that runs on the same box (aarch64-native, no Unsloth).
+
+## What It Is
+
+- **A local inference server.** Models run on hardware you own, on your LAN. No API bills,
+  no data leaving the network.
+- **OpenAI protocol.** Point any OpenAI client at it — chat, streaming, tool calls.
+- **Bearer-token auth** so you can expose it on the LAN without leaving it wide open.
+- **A YAML registry** of tuned per-model launch configs (context length, quantization,
+  KV-cache dtype, LoRA adapters) — hard-won settings, not defaults.
+- **A fine-tuning rig.** Token-filter → LoRA train → serve the adapter, all on the Spark.
+
+## What It Is Not
+
+- Not a chat UI — point [llm-playground](../llm-playgroung) or any OpenAI client at it.
+- Not multi-tenant — **one server at a time**, one GPU.
+- Not a cloud deployment tool. It runs on the box in front of you.
+
+---
+
+## Hardware
+
+**Primary target: DGX Spark / GB10.** Grace (aarch64) + Blackwell (sm_121), 128 GB unified
+LPDDR5X shared between CPU and GPU. That unified pool is the whole point: a 31B model in
+bf16, or 27B FP8 at 128k context, fits without juggling quantization.
+
+Also runs on: any x86 + NVIDIA GPU workstation (Ampere / Ada / Blackwell). The registry
+comments flag which quantization to pick per architecture.
+
+Check what you're on:
+
+```bash
+python3 -m ml.cli info
+```
+
+That prints GPU / SM version / CPU arch, which of the training and serving libraries
+actually imported, and whether Docker + `nvidia-smi` are present.
+
+---
+
+## Install
+
+```bash
+git clone https://github.com/gkato/ml-compute.git
+cd ml-compute
+bash setup.sh
+source venv/bin/activate
+```
+
+`setup.sh` is architecture-aware:
+
+- **aarch64 (Spark/GB10)** — installs the HF stack (torch, transformers, peft, trl,
+  accelerate) plus the CLI deps, then attempts vLLM. Unsloth, flash-attn, and xformers
+  are skipped: they're x86-only.
+- **x86_64** — installs `requirements.txt` (vLLM + CLI deps).
+
+It also creates `data/{logs,hf_cache}`, copies `.env.example` → `.env.local`, and generates
+an `API_KEY`. Add a HuggingFace token if you want gated models (Llama, Gemma):
+
+```bash
+echo "HF_TOKEN=hf_xxx" >> .env.local
+```
+
+Optional convenience alias — every example below uses the module form:
+
+```bash
+alias mlc='python3 -m ml.cli'
+```
+
+---
+
+## Quick Start
+
+### vLLM (default backend)
+
+```bash
+python3 -m ml.cli models pull qwen3.6-27b-fp8    # download weights
+python3 -m ml.cli serve qwen3.6-27b-fp8          # start in background
+python3 -m ml.cli status                         # 'loading…' → 'ready ✓'
+python3 -m ml.cli logs -f                        # watch it load
+```
+
+### llama.cpp (GGUF)
+
+No pull step — llama.cpp fetches and caches the GGUF itself:
+
+```bash
+python3 -m ml.cli serve llama qwen2.5-coder-32b                      # registry alias
+python3 -m ml.cli serve llama bartowski/Qwen2.5-7B-Instruct-GGUF:Q4_K_M   # any HF GGUF repo
+python3 -m ml.cli serve llama /path/to/model.gguf                    # local file
+```
+
+Requires the `llama-server` binary on `PATH` (see [GB10 notes](#llamacpp-must-be-built-with-openssl)).
+
+### NIM (Docker / TensorRT-LLM)
+
+```bash
+echo 'NGC_API_KEY=nvapi-...' >> .env.local   # free at build.nvidia.com
+python3 -m ml.cli nim models                 # list the catalog
+python3 -m ml.cli nim serve qwen3.5-27b-nim
+python3 -m ml.cli nim status
+```
+
+### Call it
+
+```bash
+API_KEY=$(grep ^API_KEY= .env.local | cut -d= -f2-)
+
+curl -s http://localhost:8000/v1/chat/completions \
+  -H "Authorization: Bearer $API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"model":"Qwen/Qwen3.6-27B-FP8","messages":[{"role":"user","content":"Say pong."}],"max_tokens":5}' \
+  | python3 -m json.tool
+```
+
+The `model` field is whatever `status` reports — the HF ID for vLLM, the `served_name`
+for llama.cpp, a LoRA `name` if the registry entry defines adapters.
+
+### Stop / swap
+
+```bash
+python3 -m ml.cli stop                        # works for vLLM or llama.cpp
+python3 -m ml.cli restart gemma4-12b-it       # stop + start a different vLLM model
+python3 -m ml.cli nim stop                    # NIM has its own lifecycle
+```
+
+**One server at a time.** All three backends bind port 8000. vLLM and llama.cpp share one
+state file (`data/server.json`) and one `stop`; NIM lives under its own `nim` subgroup.
+Stop whatever's running before starting something else.
+
+---
+
+## Reaching It From Other Machines
+
+The server binds `0.0.0.0` by default, so on a trusted LAN just use the Spark's hostname:
+
+```
+Base URL:  http://spark.local:8000/v1
+API key:   the API_KEY from .env.local on the Spark
+```
+
+Prefer not to expose the port? Tunnel over SSH from the client machine instead:
+
+```bash
+ssh -L 8000:localhost:8000 user@spark.local
+```
+
+Then the base URL is `http://localhost:8000/v1`.
+
+### With llm-playground
+
+No code changes — register a model with provider `openai`, the base URL above, the
+`API_KEY`, and the model ID that `status` reports.
+
+---
+
+## Picking a Backend
+
+| Situation | Use |
+|-----------|-----|
+| Serving safetensors, need LoRA-at-runtime, long context, prefix caching | **vLLM** |
+| GGUF weights, huge quantized context, tight memory, or vLLM won't build | **llama.cpp** |
+| Want NVIDIA-tuned TensorRT-LLM kernels and NVFP4 on Blackwell | **NIM** |
+| Fine-tuning | none — stop the server, run `Makefile.gb10` |
+
+On GB10, vLLM is the day-to-day workhorse (LoRA adapters and the registry live there).
+NIM is faster on decode but heavier to operate and has a known memory bug on this box
+(below). llama.cpp is the escape hatch: it always builds on aarch64 and its quantized KV
+cache reaches contexts vLLM can't afford.
+
+---
+
+## Model Registries
+
+Three YAML files, one per backend. Adding a model is a registry edit — no code changes.
+
+| File | Backend | Key fields |
+|------|---------|-----------|
+| [registry/models.yaml](registry/models.yaml) | vLLM | `hf_id`, `max_model_len`, `quantization`, `gpu_memory_utilization`, `max_num_seqs`, `rope_scaling`, `reasoning_parser`, `loras`, `extra_args` |
+| [registry/llama_models.yaml](registry/llama_models.yaml) | llama.cpp | `hf_repo` or `gguf_path`, `n_gpu_layers`, `ctx_size`, `served_name`, `extra_args` |
+| [registry/nim_catalog.yaml](registry/nim_catalog.yaml) | NIM | `image`, `model_name`, `gpu_count`, `extra_env` |
+
+`registry/models.yaml` is the big one — every entry carries comments explaining *why* those
+numbers, with measured memory breakdowns per model and per context length. Read them before
+tuning. A representative slice of what's registered:
+
+| Alias | Notes |
+|-------|-------|
+| `qwen3.6-27b-fp8` | Official FP8 checkpoint, 128k ctx — good default on Blackwell |
+| `qwen3.6-27b-nvfp4` | NVIDIA NVFP4, ~8 GB resident — **Blackwell only** |
+| `qwen3.6-27b` | bf16 base — use this one for fine-tuning |
+| `qwen3.5-9b-fp8` / `-fp8-long` | 40k throughput entry / 128k thinking-mode entry |
+| `gemma4-12b-it` / `-it-fp8` / `-it-ft` | bf16 / runtime-FP8 / bf16 + LoRA adapter |
+| `gemma4-31b-it-fp8` | 31B via runtime FP8 quant — GB10-sized |
+| `qwen2.5-coder-32b` (llama.cpp) | Q8_0 GGUF with `--jinja` — real tool calling for agentic coders |
+
+Adding an entry:
+
+```yaml
+  my-model:
+    hf_id: org/my-model
+    vram_gb: 18                    # documentation only; not enforced
+    max_model_len: 32768
+    dtype: auto
+    quantization: fp8
+    gpu_memory_utilization: 0.85
+    max_num_seqs: 4
+    extra_args:
+      - --max-num-batched-tokens
+      - "8192"
+```
+
+Then `python3 -m ml.cli models pull my-model && python3 -m ml.cli serve my-model`.
+
+Serve a LoRA adapter alongside its base by adding `loras:` — clients select the fine-tune
+by passing its `name` as the `model` field, or the base HF ID to bypass it:
+
+```yaml
+    loras:
+      - name: gemma4-12b-gb10-001
+        path: data/adapters/gemma4-12b-gb10-001
+        rank: 16
+```
+
+Confirm a YAML edit actually parsed the way you meant:
+
+```bash
+python3 -c "from ml.config import get_models; import json; print(json.dumps(get_models()['my-model'], indent=2))"
+```
+
+---
+
+## DGX Spark / GB10 Notes
+
+Things that cost real debugging time on this hardware.
+
+### Unified memory changes what `gpu_memory_utilization` means
+
+There is no separate VRAM pool. `gpu_memory_utilization: 0.9` on a 128 GB Spark asks for
+~115 GB — and the Grace CPU, your shell, and the page cache all live in that same 128 GB.
+The registry entries deliberately sit at **0.7–0.85** for this reason. Push it higher and
+you'll thrash the whole box, not just the GPU.
+
+### Blackwell env vars are set automatically
+
+For `sm_120+`, `ml/vllm_server.py` exports `TORCH_CUDA_ARCH_LIST`,
+`VLLM_FLASHINFER_FORCE_TARGET`, and `VLLM_USE_FLASHINFER_SAMPLER=0` before launching vLLM.
+Without them FlashInfer's JIT bails out with "requires GPUs with sm75 or higher" and the
+engine never comes up.
+
+### NVFP4 is Blackwell-only
+
+`quantization: modelopt_fp4` needs native FP4 tensor cores (sm_100 / sm_120 / sm_121).
+Halves the footprint versus FP8. On Ampere/Ada, vLLM either refuses to load or falls back
+to a slow emulated path — use the FP8 entry there instead.
+
+### NIM FP8 has a memory-runaway bug on GB10
+
+The FP8 variant of the Qwen3.6-27B NIM surges to 115–124 GB after load and ignores every
+memory-limit flag ([NVIDIA forum
+thread](https://forums.developer.nvidia.com/t/urgent-dgx-spark-gb10-uma-nim-container-memory-runaway-all-limitation-parameters-invalid-memory-occupies-120gb/371180)).
+Prefer NVFP4 or bf16 NIM tags, or serve that model with vLLM.
+
+### llama.cpp must be built with OpenSSL
+
+Without it, `-hf` auto-download fails with "HTTPS is not supported" and you have to fetch
+the GGUF by hand and point `gguf_path` at it.
+
+```bash
+sudo apt install libssl-dev
+cmake -B build -DGGML_CUDA=ON -DLLAMA_OPENSSL=ON
+cmake --build build --config Release -j
+export PATH="$PWD/build/bin:$PATH"
+```
+
+CUDA arch autodetects to `sm_121` (`BLACKWELL_NATIVE_FP4`). Newer model architectures
+(e.g. `gemma4_unified`) need a recent llama.cpp checkout.
+
+### aarch64 means no Unsloth
+
+Unsloth, flash-attn, and xformers ship x86-only wheels. The training path here is plain
+HF Transformers + PEFT + TRL ([ml/distill_train_hf.py](ml/distill_train_hf.py)), which is
+~1.5–2× slower than Unsloth on x86 but fully native on ARM64. Unified memory also makes
+QLoRA unnecessary — bf16 LoRA gives cleaner gradients and still fits.
+
+### Not every GGUF can drive an agent
+
+`gemma-4-12b-coder` (Q8_0) has **no tool/function calling** — it's code-gen and chat only,
+and will loop or no-op inside opencode/aider. It also *requires* `temp 1.0 / top_p 0.95 /
+top_k 64` or it degenerates into repetition (already set in its `extra_args`). For agentic
+use pick a mainstream tool-calling model like `qwen2.5-coder-32b` with `--jinja`.
+
+---
+
+## Fine-Tuning on the Spark
+
+bf16 LoRA via HF + PEFT + TRL. Driven by [Makefile.gb10](Makefile.gb10).
+
+```bash
+DATASET=datasets/my_data.jsonl        # {"messages":[{user},{assistant}]} per line
+
+# 1. How long are these samples, really? Pick MAX_SEQ_LEN from this.
+make -f Makefile.gb10 report DATASET=$DATASET BASE_MODEL=google/gemma-4-12B-it
+
+# 2. Token-cap the dataset → <name>_train.jsonl
+make -f Makefile.gb10 filter DATASET=$DATASET MAX_SEQ_LEN=25600
+
+# 3. Worst-case memory check: the 5 BIGGEST records, 1 epoch. If this fits, the run fits.
+make -f Makefile.gb10 smoke DATASET=$DATASET MAX_SEQ_LEN=25600
+
+# 4. Train
+make -f Makefile.gb10 train DATASET=$DATASET ADAPTER_NAME=my-ft-001 \
+     BASE_MODEL=google/gemma-4-12B-it MAX_SEQ_LEN=25600 EPOCHS=3
+```
+
+Stop the inference server first — `python3 -m ml.cli stop`. Training and serving will
+otherwise fight over the same unified memory.
+
+Knobs: `ADAPTER_NAME`, `BASE_MODEL`, `MAX_SEQ_LEN`, `EPOCHS`, `RANK`, `LR`, `BATCH_SIZE`,
+`GRAD_ACCUM`, `SAVE_EVERY`, `QLORA=1` (off by default). Adapters land in
+`data/adapters/<ADAPTER_NAME>/`.
+
+### Long runs that survive SSH drops
+
+[scripts/train_gemma4_12b_gb10.sh](scripts/train_gemma4_12b_gb10.sh) token-filters in the
+foreground, then `setsid nohup`s the trainer so it's reparented to init and ignores SIGHUP —
+close your laptop and the run continues. It writes `data/distill_train.{pid,meta}` for the
+status script:
+
+```bash
+DATASET=... ADAPTER_NAME=... bash scripts/train_gemma4_12b_gb10.sh
+
+bash scripts/train_status.sh            # elapsed, latest loss/epoch/lr, recent errors
+bash scripts/train_status.sh --tail     # follow live
+bash scripts/train_status.sh --gpu      # + nvidia-smi
+kill $(cat data/distill_train.pid)      # stop
+```
+
+[scripts/train_gemma4_gb10.sh](scripts/train_gemma4_gb10.sh) is the 31B sibling. It prints a
+memory/wall-time projection and then calls `make -f Makefile.gb10 train` **in the
+foreground** — wrap it yourself to detach (its confirmation prompt is skipped when stdin
+isn't a tty):
+
+```bash
+setsid nohup bash scripts/train_gemma4_gb10.sh > data/logs/gemma4_31b.log 2>&1 < /dev/null &
+```
+
+Attention is O(n²) in sequence length, so context dominates wall-time. Rough numbers the
+scripts themselves project: 12B, ~180 records × 3 epochs → 1.5–3 h at 16k, 4–6 h at 30k.
+31B bf16 → 10–15 h at 16k, 25–40 h at 30k, and 30k peaks near ~103 GB — smoke-test first.
+
+### Serving the adapter
+
+Add a `loras:` block to the model's `registry/models.yaml` entry pointing at
+`data/adapters/<name>`, then `serve` it. Match the adapter's training precision — a LoRA
+trained on bf16 weights is cleanest served on the **bf16** entry, not a runtime-FP8 one.
+For a permanent artifact, merge the adapter into the base and re-quantize instead.
+
+---
+
+## Distillation Pipeline
+
+A larger workflow for building training data from a teacher model, driven by
+[Makefile.distill](Makefile.distill):
+
+```bash
+make -f Makefile.distill clean-data   # normalize the seed export, swap in a short system prompt
+make -f Makefile.distill synth        # synthetic expansion (needs GEMINI_API_KEY)
+make -f Makefile.distill train        # QLoRA training
+make -f Makefile.distill eval         # score the adapter against the seed set
+```
+
+The modules are usable standalone: `distill_clean`, `distill_synth`, `distill_augment`,
+`distill_focus`, `distill_combine`, `distill_token_filter`, `distill_eval`.
+
+Note this Makefile's `train` target uses the **4-bit QLoRA** path
+([ml/distill_train.py](ml/distill_train.py), bitsandbytes — auto-detects bf16 vs
+pre-quantized AWQ bases). On the Spark, use `Makefile.gb10` for the training step and this
+pipeline only for the data steps.
+
+## Evaluating
+
+```bash
+# Against a running vLLM server with the adapter loaded (fast, repeatable)
+python3 -m ml.distill_eval \
+  --eval-set data/datasets/seed_clean.jsonl \
+  --vllm-url http://localhost:8000/v1 \
+  --vllm-model google/gemma-4-12B-it \
+  --vllm-adapter gemma4-12b-gb10-001
+
+# Replay a backtest XLSX through the local endpoint and write the results back
+python3 -m ml.backtest_runner \
+  --input  prompts/backtest-in.xlsx \
+  --output data/backtest-out.xlsx \
+  --base-url http://localhost:8000/v1 \
+  --model my-ft-001 \
+  --summary
+```
+
+---
+
+## CLI Reference
+
+```bash
+python3 -m ml.cli --help          # every command, with a workflow cheat-sheet epilog
+```
+
+### Models (vLLM weights)
+
+```bash
+python3 -m ml.cli models list              # registered aliases, ✓ = downloaded, sizes
+python3 -m ml.cli models pull <alias>      # or a raw org/repo HF ID
+python3 -m ml.cli models remove <alias>    # free disk
+python3 -m ml.cli models size              # disk usage per model
+```
+
+### Serving
+
+```bash
+python3 -m ml.cli serve <alias>                  # vLLM (default backend)
+python3 -m ml.cli serve <alias> --foreground     # run inline; prints the exact vllm command
+python3 -m ml.cli serve <alias> --port 8001
+python3 -m ml.cli serve llama <id> [--ngl 999] [--ctx 32768]
+python3 -m ml.cli stop
+python3 -m ml.cli restart <alias>
+python3 -m ml.cli status                         # backend, model, PID, URL, readiness, API key
+python3 -m ml.cli logs -f
+```
+
+### NIM
+
+```bash
+python3 -m ml.cli nim models
+python3 -m ml.cli nim serve <alias> [--gpus N] [--port P] [--foreground]
+python3 -m ml.cli nim status         # reports EXITED + exit code/error when a container dies
+python3 -m ml.cli nim stop
+python3 -m ml.cli nim logs -f
+```
+
+### Box + config
+
+```bash
+python3 -m ml.cli info               # GPU, arch, library availability, tooling
+python3 -m ml.cli config show
+python3 -m ml.cli config gen-key     # new API key → .env.local
+```
+
+---
+
+## Troubleshooting
+
+| Symptom | Cause | Fix |
+|---------|-------|-----|
+| `status` shows nothing right after `serve` | Engine crashed during load | `python3 -m ml.cli logs`, then re-run with `--foreground` |
+| Stuck at `loading…` forever | Long first-load (quant pass, graph capture) or a hang | `logs -f`; FP8 runtime quant adds ~30 s on first load, NIM 30–90 s |
+| `A server is already running` | Stale `data/server.json` or a live process | `stop`; if it won't die, see below |
+| CUDA OOM on the Spark | `gpu_memory_utilization` too high, or context too long | Lower it to 0.7–0.85, drop `max_model_len`, or add `--kv-cache-dtype fp8` |
+| Whole box goes unresponsive | Unified memory oversubscribed | Same as above — 0.9+ starves the Grace CPU |
+| `FlashInfer requires GPUs with sm75 or higher` | Blackwell env vars missing | Serve via the CLI (it sets them), not raw `vllm serve` |
+| `llama-server not found` | Not built / not on PATH | Build with `-DGGML_CUDA=ON -DLLAMA_OPENSSL=ON`, export `build/bin` |
+| `HTTPS is not supported` from llama.cpp | Built without OpenSSL | Rebuild, or use `gguf_path` with a hand-downloaded GGUF |
+| `OSError: ... gated repo` | Gated model, no token | `echo "HF_TOKEN=hf_..." >> .env.local` |
+| 401 from `/v1/*` | Wrong key | `python3 -m ml.cli config show` |
+| GGUF model loops or ignores tools | Model has no tool-calling template | Use a tool-calling model + `--jinja` |
+
+Recovering from a wedged server:
+
+```bash
+pkill -9 -f "vllm serve" ; pkill -9 -f llama-server
+rm -f data/server.json
+nvidia-smi                        # confirm memory freed, no stragglers
+python3 -m ml.cli serve <alias>
+```
+
+---
+
+## Project Layout
+
+```
+ml-compute/
+├── ml/
+│   ├── cli.py                  Click CLI — every command lives here
+│   ├── vllm_server.py          vLLM lifecycle + Blackwell env setup
+│   ├── llama_server.py         llama.cpp (GGUF) lifecycle
+│   ├── nim_server.py           NIM container lifecycle (Docker)
+│   ├── models.py               HF download / list / remove
+│   ├── state.py                PID + state file (data/server.json)
+│   ├── config.py               .env.local + registry loading
+│   ├── distill_train_hf.py     bf16 LoRA training (aarch64/GB10 path)
+│   ├── distill_train.py        4-bit QLoRA training (bitsandbytes; bf16 or AWQ base)
+│   ├── distill_train_unsloth.py  Unsloth QLoRA training (x86 only)
+│   ├── distill_*.py            Data pipeline: clean, synth, augment, focus, filter, eval
+│   ├── backtest_runner.py      Replay an XLSX backtest through a local endpoint
+│   └── gemma4_*.py             Gemma 4 attention / PEFT patches
+├── registry/
+│   ├── models.yaml             vLLM aliases — heavily commented, the reference doc
+│   ├── llama_models.yaml       GGUF aliases
+│   ├── nim_catalog.yaml        NIM container catalog
+│   ├── datasets.yaml           Fine-tuning dataset aliases
+│   └── apis.yaml               Hosted-provider model lists (teacher models)
+├── Makefile.gb10               LoRA fine-tuning on DGX Spark (bf16, HF+PEFT+TRL)
+├── Makefile.distill            Distillation data pipeline (+ x86 QLoRA train)
+├── Makefile.qwen{,9b}          QLoRA recipes for a 32 GB RTX PRO 4500 box
+├── scripts/
+│   ├── train_gemma4_12b_gb10.sh   Detached (setsid+nohup) 12B run
+│   ├── train_gemma4_gb10.sh       31B run — wraps Makefile.gb10, foreground
+│   └── train_status.sh            Progress / loss / errors for a detached run
+├── datasets/                   Training data (.jsonl, chat-messages format)
+├── prompts/                    System prompts + backtest workbooks
+├── data/                       Created by setup.sh
+│   ├── hf_cache/               HuggingFace weights
+│   ├── adapters/<name>/        Trained LoRA adapters
+│   ├── logs/{vllm,llama}.log   Server logs; training logs alongside
+│   └── server.json             Running server state (PID, port, model, backend)
+├── setup.sh                    Arch-aware one-shot setup
+├── requirements.txt            x86_64 dependency set
+└── .env.example                Template for .env.local
+```
+
+---
+
+## Environment Variables
+
+All optional — defaults in [ml/config.py](ml/config.py). Set them in `.env.local`.
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `API_KEY` | (generated by `setup.sh`) | Bearer token clients send |
+| `HF_TOKEN` | — | Gated models (Llama, Gemma). Omit the line entirely if unset — an empty value breaks the auth header |
+| `NGC_API_KEY` | — | Required for NIM containers |
+| `VLLM_HOST` | `0.0.0.0` | Bind address (shared by all backends) |
+| `VLLM_PORT` | `8000` | Port (shared by all backends) |
+| `DATA_DIR` | `./data` | Logs, adapters, server state, HF cache |
+| `REGISTRY_DIR` | `./registry` | Where the YAML registries load from |
+| `HF_HOME` | `./data/hf_cache` | HuggingFace cache root |
+
+`PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True` is worth exporting for training — the
+detached scripts set it already.
+
+---
+
+> `DEPLOYMENT.md` documents an older Vast.ai cloud deployment and does not apply to a local
+> Spark setup.

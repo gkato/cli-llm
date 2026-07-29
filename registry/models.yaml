@@ -1,0 +1,660 @@
+models:
+  # === Qwen 2.5 Family ===
+  qwen2.5-3b:
+    hf_id: Qwen/Qwen2.5-3B-Instruct
+    vram_gb: 8
+    max_model_len: 40960
+    dtype: auto
+
+  qwen2.5-7b:
+    hf_id: Qwen/Qwen2.5-7B-Instruct
+    vram_gb: 16
+    max_model_len: 40960
+    dtype: auto
+
+  qwen2.5-14b:
+    hf_id: Qwen/Qwen2.5-14B-Instruct
+    vram_gb: 22
+    max_model_len: 40960
+    dtype: auto
+    # If 14B doesn't fit, try the AWQ variant:
+    # hf_id: Qwen/Qwen2.5-14B-Instruct-AWQ
+    # quantization: awq
+
+  qwen3-14b-q8:
+    hf_id: Qwen/Qwen3-14B-FP8
+    vram_gb: 16
+    max_model_len: 40960
+    dtype: auto
+    quantization: fp8
+
+  qwen3-14b-awq:
+    hf_id: Qwen/Qwen3-14B-AWQ
+    vram_gb: 12
+    max_model_len: 40960
+    dtype: auto
+    quantization: awq
+
+  # Qwen3-8B with YaRN context extension (40k native → 65k effective).
+  # Mild quality degradation on long contexts, but covers the 5% of cases
+  # that overflow 40k. Use this as the distillation base.
+  qwen3-8b-awq-yarn:
+    hf_id: Qwen/Qwen3-8B-AWQ
+    vram_gb: 7
+    max_model_len: 65536
+    max_num_seqs: 16
+    dtype: auto
+    quantization: awq_marlin
+    rope_scaling:
+      rope_type: yarn
+      factor: 2.0
+      original_max_position_embeddings: 40960
+
+  # === Gemma Family ===
+  gemma2-9b:
+    hf_id: google/gemma-2-9b-it
+    vram_gb: 18
+    max_model_len: 8192
+    dtype: auto
+
+  gemma3-4b:
+    hf_id: google/gemma-3-4b-it
+    vram_gb: 10
+    max_model_len: 8192
+    dtype: auto
+
+  gemma3-12b:
+    hf_id: google/gemma-3-12b-it
+    vram_gb: 22
+    max_model_len: 8192
+    dtype: auto
+
+  # === Llama / Mistral ===
+  llama-3.1-8b:
+    hf_id: meta-llama/Llama-3.1-8B-Instruct
+    vram_gb: 16
+    max_model_len: 8192
+    dtype: auto
+
+  llama-3.1-8b-awq:
+    hf_id: hugging-quants/Meta-Llama-3.1-8B-Instruct-AWQ-INT4
+    vram_gb: 7
+    max_model_len: 65536
+    dtype: auto
+    quantization: awq_marlin
+
+  mistral-7b:
+    hf_id: mistralai/Mistral-7B-Instruct-v0.3
+    vram_gb: 16
+    max_model_len: 8192
+    dtype: auto
+
+  qwen3.5-9b-awq:
+    hf_id: casperhansen/Qwen3.5-9B-AWQ
+    vram_gb: 8
+    max_model_len: 40960
+    dtype: auto
+    quantization: awq_marlin
+
+  qwen3.5-9b-awq:
+    hf_id: cyankiwi/Qwen3.5-9B-AWQ-4bit
+    vram_gb: 8
+    max_model_len: 40960
+    dtype: auto
+    quantization: awq_marlin
+
+  # Qwen3.5-4B served as FP8 — Qwen did NOT release an official FP8
+  # checkpoint for Qwen3.5-4B (only bf16 + AWQ + GGUF variants exist).
+  # vLLM quantizes the bf16 weights to FP8 at load time, giving the same
+  # runtime as a pre-shipped FP8 model: native FP8 tensor cores on
+  # Blackwell, ~4 GB resident weights. First-load adds ~30s for the
+  # quant pass; cached on disk afterwards.
+  #
+  # Native context is 262k (no YaRN needed at any practical budget).
+  # We cap max_model_len at 40k here for max throughput on short prompts
+  # — a smaller KV-cache budget lets vLLM batch more requests at once.
+  # Use qwen3.5-4b-fp8-long when you need thinking-mode headroom.
+  #
+  # NOTE on thinking mode: Qwen3.5 ships with thinking on by default. We do
+  # NOT set reasoning_parser, so think tokens stay inline in the response.
+  # To disable thinking, send the OpenAI request with
+  #   "chat_template_kwargs": {"enable_thinking": false}
+  # in the body of /v1/chat/completions.
+  qwen3.5-4b-fp8:
+    hf_id: Qwen/Qwen3.5-4B
+    vram_gb: 6
+    max_model_len: 40960    # capped for throughput; native supports 262k
+    max_num_seqs: 8
+    dtype: auto
+    quantization: fp8
+    gpu_memory_utilization: 0.90
+    extra_args:
+      - --max-num-batched-tokens
+      - "8192"
+
+  # Qwen3.5-4B + runtime FP8 — long-context entry for THINKING MODE.
+  # Same base model as qwen3.5-4b-fp8, just with a bigger max_model_len
+  # so <think>…</think> blocks have room. No YaRN required: 128k is
+  # well within the model's native 262k context.
+  #
+  # VRAM on RTX PRO 4500 (24 GB) at 128k FP8:
+  #   - weights (FP8):           ~4 GB
+  #   - KV cache @ 128k × 2 seq: ~18 GB
+  #   - activations + workspace: ~2 GB
+  #   - total:                   ~24 GB → fits with 2 concurrent reqs
+  #
+  # If you need more concurrency, drop max_model_len to 65536 (64k)
+  # and bump max_num_seqs to 4. Or add `--kv-cache-dtype fp8` in
+  # extra_args to halve KV cache size (mild quality drop on long ctx).
+  #
+  # Client should pass `chat_template_kwargs: {enable_thinking: true}`
+  # and a generous `max_tokens` (e.g. 16384) so the <think> block plus
+  # the final answer have room.
+  qwen3.5-4b-fp8-long:
+    hf_id: Qwen/Qwen3.5-4B
+    vram_gb: 22
+    max_model_len: 131072    # 128k, native (no YaRN)
+    max_num_seqs: 2
+    dtype: auto
+    quantization: fp8
+    gpu_memory_utilization: 0.92
+    extra_args:
+      - --max-num-batched-tokens
+      - "8192"
+
+  # Qwen3.5-4B + runtime FP8 + V3 CMS-Optimized LoRA. Same base as the FP8
+  # entries above; vLLM applies the LoRA adapter at runtime. Clients pick
+  # this fine-tune by setting `model: "qwen3.5-4b-cms-v3-001"` in the
+  # /v1/chat/completions call; passing model="Qwen/Qwen3.5-4B" hits the
+  # un-adapted base on the same server.
+  #
+  # Caveat: LoRA is trained against bf16 base + 4-bit (QLoRA) attention,
+  # applied here on runtime-quantized FP8. If accuracy is weak, merge the
+  # LoRA into the bf16 base, re-quantize the merged model to FP8, and
+  # serve that directly (cleaner numerics, no LoRA at inference).
+  qwen3.5-4b-cms-v3-ft:
+    hf_id: Qwen/Qwen3.5-4B
+    vram_gb: 22
+    max_model_len: 131072    # 128k, native (no YaRN)
+    max_num_seqs: 2
+    dtype: auto
+    quantization: fp8
+    gpu_memory_utilization: 0.92
+    loras:
+      - name: qwen3.5-4b-cms-v3-001
+        path: data/adapters/qwen3.5-4b-cms-v3-001
+        rank: 16
+    extra_args:
+      - --max-num-batched-tokens
+      - "8192"
+
+  # === Qwen 3.5 — 9B (bigger family member) ===
+  # bf16 weights ~18 GB; vLLM quantizes to FP8 at load time → ~9 GB resident.
+  # No official FP8 checkpoint exists for Qwen3.5-9B yet (only bf16 + AWQ +
+  # GGUF), same situation as 4B. Native context is 262k (no YaRN).
+  # Short-context entry: capped at 40k for throughput and to leave KV-cache
+  # headroom for batching. Use qwen3.5-9b-fp8-long for thinking mode.
+  qwen3.5-9b-fp8:
+    hf_id: Qwen/Qwen3.5-9B
+    vram_gb: 14
+    max_model_len: 40960
+    max_num_seqs: 4
+    dtype: auto
+    quantization: fp8
+    gpu_memory_utilization: 0.92
+    extra_args:
+      - --max-num-batched-tokens
+      - "8192"
+
+  # Qwen3.5-9B + runtime FP8 + V14 PII-replaced LoRA. Same base as the FP8
+  # entries above; vLLM applies the LoRA adapter at runtime. Clients pick
+  # this fine-tune by setting `model: "qwen3.5-9b-v14-001"` in the
+  # /v1/chat/completions call.
+  #
+  # Caveat: LoRA is trained against bf16 base + 4-bit (QLoRA) attention,
+  # applied here on runtime-quantized FP8. If accuracy is weak, merge the
+  # LoRA into the bf16 base, re-quantize the merged model to FP8, and
+  # serve that directly (cleaner numerics, no LoRA at inference).
+  qwen3.5-9b-v14-ft:
+    hf_id: Qwen/Qwen3.5-9B
+    vram_gb: 26
+    max_model_len: 40960
+    max_num_seqs: 2
+    dtype: auto
+    quantization: fp8
+    gpu_memory_utilization: 0.92
+    loras:
+      - name: big-ft-001
+        path: data/adapters/big-ft-001
+        rank: 16
+    extra_args:
+      - --max-num-batched-tokens
+      - "8192"
+
+  # Qwen3.5-9B + runtime FP8 — long-context entry for THINKING MODE.
+  #
+  # VRAM on RTX PRO 4500 (32 GB) at 128k FP8:
+  #   - weights (FP8):           ~9 GB
+  #   - KV cache @ 128k × 1 seq: ~14 GB
+  #   - activations + workspace: ~3 GB
+  #   - total:                   ~26 GB → fits with 1 concurrent req
+  #
+  # If you need 2 concurrent reqs, drop max_model_len to 65536 (64k).
+  # Or add `--kv-cache-dtype fp8` in extra_args to halve KV cache size.
+  qwen3.5-9b-fp8-long:
+    hf_id: Qwen/Qwen3.5-9B
+    vram_gb: 26
+    max_model_len: 131072    # 128k, native (no YaRN)
+    max_num_seqs: 1
+    dtype: auto
+    quantization: fp8
+    gpu_memory_utilization: 0.92
+    extra_args:
+      - --max-num-batched-tokens
+      - "8192"
+
+  # === Qwen 3.5 — 27B ===
+  # The bf16 base. ~54 GB on disk. Needed if you want to fine-tune (gradients
+  # require bf16) or if you want vLLM to runtime-quantize to FP8.
+  # On GB10 (128 GB unified memory) this loads and serves comfortably.
+  # On smaller GPUs (<48 GB), prefer qwen3.5-27b-fp8 (official FP8 checkpoint).
+  qwen3.5-27b:
+    hf_id: Qwen/Qwen3.5-27B
+    vram_gb: 60
+    max_model_len: 40960
+    max_num_seqs: 2
+    dtype: bfloat16
+    gpu_memory_utilization: 0.85
+    extra_args:
+      - --max-num-batched-tokens
+      - "8192"
+
+  # The bf16 base served as FP8 via vLLM's runtime quantization (~14 GB).
+  # Slightly worse calibration than the official FP8 below (uses generic
+  # scales). Useful when you only have the bf16 weights downloaded.
+  qwen3.5-27b-as-fp8:
+    hf_id: Qwen/Qwen3.5-27B
+    vram_gb: 18
+    max_model_len: 40960
+    max_num_seqs: 4
+    dtype: auto
+    quantization: fp8
+    gpu_memory_utilization: 0.85
+    extra_args:
+      - --max-num-batched-tokens
+      - "8192"
+
+  # Official Qwen-calibrated FP8 — best baseline serving choice on Blackwell.
+  # No runtime quantization pass (loads as FP8 directly); ~14 GB resident.
+  # Cannot be fine-tuned from — use qwen3.5-27b for training.
+  qwen3.5-27b-fp8:
+    hf_id: Qwen/Qwen3.5-27B-FP8
+    vram_gb: 16
+    max_model_len: 40960
+    max_num_seqs: 4
+    dtype: auto
+    quantization: fp8
+    gpu_memory_utilization: 0.85
+    extra_args:
+      - --max-num-batched-tokens
+      - "8192"
+
+  # Qwen3.5-27B-FP8 long-context entry for THINKING MODE / long documents.
+  # 128k context, native (no YaRN — Qwen3.5 supports 262k natively).
+  #
+  # VRAM on GB10 (128 GB unified) at 128k FP8:
+  #   - weights (FP8):           ~14 GB
+  #   - KV cache @ 128k × 2 seq: ~70-80 GB
+  #   - activations + workspace: ~4 GB
+  #   - total:                   ~90-100 GB → fits with 2 concurrent reqs
+  #
+  # On smaller GPUs (e.g. 32 GB RTX PRO 4500): drop max_num_seqs to 1 and
+  # reduce max_model_len to 65536 (64k) or add --kv-cache-dtype fp8.
+  qwen3.5-27b-fp8-long:
+    hf_id: Qwen/Qwen3.5-27B-FP8
+    vram_gb: 100
+    max_model_len: 131072    # 128k, native (no YaRN)
+    max_num_seqs: 2
+    dtype: auto
+    quantization: fp8
+    gpu_memory_utilization: 0.85
+    extra_args:
+      - --max-num-batched-tokens
+      - "8192"
+      # Prefix caching: critical for two-phase thinking where Phase 2's
+      # prompt starts with Phase 1's prompt — saves a full re-prefill of
+      # the (large) shared prefix.
+      - --enable-prefix-caching
+
+  # === Qwen 3.6 — 27B ===
+  # Newer than Qwen 3.5 (release follow-on), same parameter count, often
+  # better on benchmarks. Native 262k context. Strong baseline candidate
+  # on GB10 / Blackwell.
+  #
+  # NIM caveat: the NIM container for this model is amd64-only at the
+  # moment (no aarch64/sbsa manifest). Running via vLLM with the entries
+  # below is the working path on GB10/DGX Spark.
+  #
+  # GB10 FP8 caveat: the official Qwen3.6-27B-FP8 checkpoint has been
+  # reported to over-allocate KV memory on sm_121 hosts via NIM. vLLM's
+  # FP8 path appears unaffected, but if you see VRAM blowup at load,
+  # drop max_model_len and/or max_num_seqs, or fall back to bf16.
+
+  # bf16 base — for fine-tuning (gradients require bf16) and as the
+  # source for vLLM's runtime FP8 quantization. ~54 GB on disk.
+  qwen3.6-27b:
+    hf_id: Qwen/Qwen3.6-27B
+    vram_gb: 60
+    max_model_len: 131072    # 128k, native (no YaRN)
+    max_num_seqs: 2
+    dtype: bfloat16
+    gpu_memory_utilization: 0.85
+    extra_args:
+      - --max-num-batched-tokens
+      - "8192"
+
+  # Official Qwen-calibrated FP8 — best baseline serving choice on Blackwell.
+  # ~14 GB resident. Cannot be fine-tuned from — use qwen3.6-27b for training.
+  qwen3.6-27b-fp8:
+    hf_id: Qwen/Qwen3.6-27B-FP8
+    vram_gb: 16
+    max_model_len: 131072    # 128k, native (no YaRN)
+    max_num_seqs: 4
+    dtype: auto
+    quantization: fp8
+    gpu_memory_utilization: 0.85
+    extra_args:
+      - --max-num-batched-tokens
+      - "8192"
+
+  # Qwen3.6-27B-FP8 long-context entry — 128k for thinking mode / long docs.
+  # Native 262k means no YaRN needed at this budget.
+  #
+  # VRAM on GB10 (128 GB unified) at 128k FP8:
+  #   - weights (FP8):           ~14 GB
+  #   - KV cache @ 128k × 2 seq: ~70-80 GB
+  #   - activations + workspace: ~4 GB
+  #   - total:                   ~90-100 GB → fits with 2 concurrent reqs
+  #
+  # Prefix caching enabled — critical for two-phase thinking workflows.
+  qwen3.6-27b-fp8-long:
+    hf_id: Qwen/Qwen3.6-27B-FP8
+    vram_gb: 100
+    max_model_len: 131072    # 128k, native (no YaRN)
+    #max_model_len: 65536
+    max_num_seqs: 1
+    dtype: auto
+    quantization: fp8
+    gpu_memory_utilization: 0.85
+    extra_args:
+      - --max-num-batched-tokens
+      - "8192"
+
+  # Official NVIDIA NVFP4 checkpoint (TensorRT Model-Optimizer, 4-bit weights
+  # + FP8 activations). ~8 GB resident — half the footprint of FP8. Served
+  # via vLLM's `modelopt_fp4` quantization method.
+  #
+  # HARDWARE: NVFP4 needs native FP4 tensor cores → Blackwell only
+  # (sm_100 / sm_120 / sm_121: B200, RTX PRO, GB10/DGX Spark). On Ada/Ampere
+  # vLLM either refuses to load or falls back to a slow emulated path — don't
+  # use this entry there; use qwen3.6-27b-fp8 instead. Requires a recent vLLM
+  # (>= 0.8.5) with ModelOpt FP4 support. `--quantization` can be omitted
+  # (vLLM auto-detects from hf_quant_config.json), but we set it explicitly.
+  #
+  # Cannot be fine-tuned from — use qwen3.6-27b (bf16) for training.
+  qwen3.6-27b-nvfp4:
+    hf_id: nvidia/Qwen3.6-27B-NVFP4
+    vram_gb: 60
+    #max_model_len: 131072    # 128k, native (no YaRN)
+    max_model_len: 65536
+    max_num_seqs: 2
+    dtype: auto
+    quantization: modelopt_fp4
+    gpu_memory_utilization: 0.7
+    extra_args:
+      - --max-num-batched-tokens
+      - "8192"
+
+  # bf16 — preferred on Blackwell (sm_120+). Uses native bf16 tensor cores;
+  # AWQ Marlin falls back to a slow generic path on Blackwell, so unless
+  # you're VRAM-constrained, this is faster than the 4-bit variant.
+  qwen3.5-4b:
+    hf_id: Qwen/Qwen3.5-4B-Instruct
+    vram_gb: 10
+    max_model_len: 32768
+    max_num_seqs: 8
+    dtype: bfloat16
+    gpu_memory_utilization: 0.90
+    extra_args:
+      - --max-num-batched-tokens
+      - "8192"
+
+  # FP8 — fastest on Blackwell when an FP8 checkpoint is available
+  # (native FP8 tensor cores). Falls back gracefully on Ada/Ampere.
+  qwen3.5-4b-fp8:
+    hf_id: Qwen/Qwen3.5-4B-Instruct-FP8
+    vram_gb: 6
+    max_model_len: 32768
+    max_num_seqs: 8
+    dtype: auto
+    quantization: fp8
+    gpu_memory_utilization: 0.90
+    extra_args:
+      - --max-num-batched-tokens
+      - "8192"
+
+  # AWQ 4-bit — only worth it on Ampere/Ada (sm_80/sm_89) where Marlin
+  # is hand-tuned. On Blackwell, prefer the bf16 or FP8 variants above.
+  qwen3.5-4b-awq:
+    hf_id: QuantTrio/Qwen3.5-4B-AWQ
+    vram_gb: 5
+    max_model_len: 32768
+    max_num_seqs: 8
+    dtype: auto
+    quantization: awq_marlin
+    gpu_memory_utilization: 0.90
+    extra_args:
+      - --max-num-batched-tokens
+      - "8192"
+
+  qwen3-8b-awq:
+    hf_id: Qwen/Qwen3-8B-AWQ
+    vram_gb: 6
+    max_model_len: 40960
+    dtype: auto
+    quantization: awq_marlin
+
+  llama-3.1-8b-awq:
+    hf_id: hugging-quants/Meta-Llama-3.1-8B-Instruct-AWQ-INT4
+    vram_gb: 7
+    max_model_len: 65536
+    dtype: auto
+    quantization: awq_marlin
+
+  gemma4-31b-awq:
+    hf_id: cyankiwi/gemma-4-31B-it-AWQ-4bit
+    vram_gb: 22
+    max_model_len: 196608
+    dtype: auto
+    gpu_memory_utilization: 0.95
+    max_num_seqs: 4
+    extra_args:
+      - --max-num-batched-tokens
+      - "8192"
+      - --limit-mm-per-prompt
+      - '{"image":0,"video":0}'
+
+  # Gemma 4 31B-IT served via vLLM runtime FP8 quantization.
+  # Targets GB10 / DGX Spark (128 GB unified): bf16 base (~62 GB) is loaded
+  # then quantized to FP8 (~16 GB resident). max_model_len 64k keeps KV
+  # cache reasonable; large --max-num-batched-tokens helps prefill on
+  # long prompts. AWQ Marlin path performs poorly on sm_120+ so FP8 is
+  # the preferred quantization on Blackwell — use the gemma4-31b-awq
+  # entry above only on Ampere/Ada GPUs.
+  # Gemma 4 12B-IT dense — strong baseline candidate that fits comfortably
+  # on GB10 (128 GB unified). Runtime FP8 quant by vLLM keeps weights at
+  # ~6 GB. Use as a baseline before committing to 31B fine-tuning — if
+  # 12B base hits 90%+ on the backtest, you can ship it as-is.
+  gemma4-12b-it-fp8:
+    hf_id: google/gemma-4-12B-it
+    vram_gb: 30
+    max_model_len: 65536
+    max_num_seqs: 4
+    dtype: auto
+    quantization: fp8
+    gpu_memory_utilization: 0.85
+    extra_args:
+      - --max-num-batched-tokens
+      - "32768"
+      - --enable-prefix-caching
+
+  # bf16 variant — for fine-tuning Gemma 4 12B (gradients require bf16),
+  # and now also serves cleanly with cuda graphs enabled.
+  # bf16 weights ~24 GB, fits trivially on GB10.
+  # NOTE: vLLM 0.21.0 had a shape-mismatch issue with the "unified"
+  # gemma4 architecture during cuda-graph capture, worked around with
+  # --enforce-eager. The fix has since shipped upstream, so we run with
+  # cuda graphs (full throughput). Requires a current vLLM — if you're
+  # on 0.21.0, re-add `--enforce-eager` until you upgrade.
+  gemma4-12b-it:
+    hf_id: google/gemma-4-12B-it
+    vram_gb: 30
+    max_model_len: 65536
+    max_num_seqs: 4
+    dtype: bfloat16
+    gpu_memory_utilization: 0.85
+    extra_args:
+      - --max-num-batched-tokens
+      - "32768"
+
+  # Fine-tuned variant — bf16 base + the GB10 LoRA applied at runtime via
+  # vLLM. Served on the bf16 base (NOT FP8) on purpose: the adapter was
+  # trained against bf16 weights, so this avoids any runtime-quant mismatch
+  # — cleanest numerics, and 24 GB fits trivially on the 128 GB GB10.
+  # Client selects the fine-tune by setting
+  #   model: "gemma4-12b-gb10-001"
+  # in /v1/chat/completions; model="google/gemma-4-12B-it" hits the
+  # un-adapted base on the same server.
+  # If you later want a standalone served model with no LoRA at inference,
+  # merge the adapter into the bf16 base (and optionally re-quantize to FP8).
+  gemma4-12b-it-ft:
+    hf_id: google/gemma-4-12B-it
+    vram_gb: 30
+    max_model_len: 65536
+    max_num_seqs: 4
+    dtype: bfloat16
+    gpu_memory_utilization: 0.85
+    loras:
+      - name: gemma4-12b-gb10-001
+        path: data/adapters/gemma4-12b-gb10-001
+        rank: 16
+    extra_args:
+      - --max-num-batched-tokens
+      - "32768"
+
+  gemma4-31b-it-fp8:
+    hf_id: google/gemma-4-31B-it
+    vram_gb: 100
+    max_model_len: 65536
+    #max_model_len: 131072    # 128k, native (no YaRN)
+    max_num_seqs: 1
+    dtype: auto
+    quantization: fp8
+    gpu_memory_utilization: 0.90
+    extra_args:
+      - --max-num-batched-tokens
+      - "32768"
+
+  # Gemma 4 31B-IT served as FP8 with a GB10-trained CMS LoRA applied at
+  # runtime. Clients pick the fine-tune by setting
+  #   model: "gemma4-31b-gb10-001"
+  # in /v1/chat/completions; passing model="google/gemma-4-31B-it" hits
+  # the un-adapted base on the same server.
+  #
+  # Caveat: the LoRA was trained against the bf16 base via HF+PEFT
+  # (optionally QLoRA), applied here on runtime-quantized FP8. If
+  # accuracy is weak, merge LoRA into bf16 base, re-quantize to FP8,
+  # and serve that directly (cleaner numerics, no LoRA at inference).
+  gemma4-31b-it-fp8-ft:
+    hf_id: google/gemma-4-31B-it
+    vram_gb: 100
+    max_model_len: 65536
+    max_num_seqs: 1
+    dtype: auto
+    quantization: fp8
+    gpu_memory_utilization: 0.90
+    loras:
+      - name: gemma4-31b-gb10-001
+        path: data/adapters/gemma4-31b-gb10-001
+        rank: 16
+    extra_args:
+      - --max-num-batched-tokens
+      - "32768"
+
+  # Same AWQ base + V14 short-prompt SFT adapter applied at runtime via
+  # vLLM's LoRA support. Client requests the fine-tune by setting
+  # model="gemma4-v14-001" in the OpenAI /v1/chat/completions call; passing
+  # model="cyankiwi/gemma-4-31B-it-AWQ-4bit" gets the un-adapted base.
+  # Caveat: LoRA was trained against bf16+bnb-NF4 base, applied here on AWQ.
+  # If accuracy is weak, merge→bf16→re-AWQ as one consolidated model.
+  gemma4-31b-awq-v14ft:
+    hf_id: cyankiwi/gemma-4-31B-it-AWQ-4bit
+    vram_gb: 24
+    max_model_len: 98304
+    dtype: auto
+    gpu_memory_utilization: 0.95
+    max_num_seqs: 4
+    loras:
+      - name: gemma4-v14-001
+        path: /workspace/ml-compute/data/adapters/gemma4-v14-001
+        rank: 16
+    extra_args:
+      - --max-num-batched-tokens
+      - "8192"
+      - --limit-mm-per-prompt
+      - '{"image":0,"video":0}'
+
+  # MoE: 27B total params, ~4B activated per token (A4B).
+  # Inference closer to a 4B dense model in latency, quality between 4B and 27B dense.
+  # Smaller weights than 31B → more KV headroom, full 256k context fits cleanly.
+  gemma4-26b-awq:
+    hf_id: cyankiwi/gemma-4-26B-A4B-it-AWQ-4bit
+    vram_gb: 18
+    max_model_len: 262144
+    dtype: auto
+    gpu_memory_utilization: 0.95
+    max_num_seqs: 4
+    extra_args:
+      - --max-num-batched-tokens
+      - "8192"
+      - --limit-mm-per-prompt
+      - '{"image":0,"video":0}'
+
+  # Qwen3.5 27B (Gated DeltaNet + MoE hybrid, vision-language).
+  # 256k native context, extensible to 1M with YaRN. Thinking mode on by default.
+  # Multimodal — disabling vision keeps it text-only and bypasses MM encoder budget.
+  # reasoning_parser routes <think> blocks to delta.reasoning_content so model
+  # still reasons internally but `content` stays clean. The openai_provider
+  # streaming wrapper relays reasoning_content as <think>…</think> chunks to
+  # keep the wire alive across Cloudflare's 120s idle timeout.
+  qwen3.5-27b-awq:
+    hf_id: QuantTrio/Qwen3.5-27B-AWQ
+    vram_gb: 18
+    max_model_len: 98304
+    dtype: auto
+    quantization: awq_marlin
+    gpu_memory_utilization: 0.95
+    max_num_seqs: 1
+    reasoning_parser: qwen3
+    # NOTE on speculative decoding: Qwen3.5 uses a 248k-token vocabulary
+    # (vs Qwen2.5's 152k), so any Qwen2.5/Qwen3 draft model is incompatible.
+    # A Qwen3.5-family draft would work on vocab but may hit the
+    # `qwen3_5` model_type issue on this vLLM/transformers combo. The big
+    # win for latency at this scale is capping the <think> token budget at
+    # the prompt level — see V12 system message.
+    extra_args:
+      # Larger prefill batch → fewer chunks for 30k+ inputs → faster TTFT.
+      - --max-num-batched-tokens
+      - "16384"
+      - --limit-mm-per-prompt
+      - '{"image":0,"video":0}'

@@ -1,0 +1,50 @@
+# NVIDIA NIM (Inference Microservices) catalog.
+#
+# Each entry maps a short alias to an NGC container image. Images are
+# tested OpenAI-compatible servers — point your client at the URL printed
+# by `ml.cli nim status` and call /v1/chat/completions as usual.
+#
+# Containers require NGC authentication. Set NGC_API_KEY in .env.local
+# (get one free at build.nvidia.com → Login → API key).
+#
+# Verify a container exists in your account before adding it here —
+# NVIDIA pulls/changes images over time. List available pulls with:
+#     docker search nvcr.io/nim/qwen
+#
+# Conventions:
+#   - `image` — full ngc URI with tag
+#   - `model_name` — what clients use as the `model` field in API calls
+#     (defaults to the container's served name; many NIMs accept the
+#     HuggingFace ID like `Qwen/Qwen3.5-9B`)
+#   - `gpu_count` — set >1 only for tensor-parallel models
+#   - `extra_env` — pass-through env vars (e.g. NIM_LOG_LEVEL)
+
+nim_catalog:
+  qwen3.5-9b-nim:
+    image: nvcr.io/nim/qwen/qwen3.5-9b-instruct:latest
+    model_name: Qwen/Qwen3.5-9B
+    description: Qwen 3.5 9B Instruct — TensorRT-LLM optimized
+    vram_gb: 12
+
+  qwen3.5-27b-nim:
+    image: nvcr.io/nim/qwen/qwen3.5-27b-instruct:latest
+    model_name: Qwen/Qwen3.5-27B
+    description: Qwen 3.5 27B Instruct — TensorRT-LLM optimized
+    vram_gb: 30
+
+  qwen3.6-35b-a3b-nim:
+    image: nvcr.io/nim/qwen/qwen3.6-35b-a3b:latest
+    model_name: Qwen/Qwen3.6-35B-A3B
+    description: Qwen 3.6 35B MoE (3B active) — strong on GB10
+    vram_gb: 40
+
+  # Qwen 3.6 27B — strong baseline candidate on GB10 (NVFP4 native).
+  # KNOWN ISSUE: the FP8 variant of this NIM has a memory-runaway bug
+  # on GB10 — it surges to 115-124 GB after load even with limit flags.
+  # Prefer NVFP4 if the NGC tag supports it, else bf16. See:
+  # https://forums.developer.nvidia.com/t/urgent-dgx-spark-gb10-uma-nim-container-memory-runaway-all-limitation-parameters-invalid-memory-occupies-120gb/371180
+  qwen3.6-27b-nim:
+    image: nvcr.io/nim/qwen/qwen3.6-27b:latest
+    model_name: Qwen/Qwen3.6-27B
+    description: Qwen 3.6 27B — newer than 3.5, NVFP4 variant ideal on GB10
+    vram_gb: 30   # NVFP4 ~26 GB; bf16 ~51 GB; FP8 has known bug

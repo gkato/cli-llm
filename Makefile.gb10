@@ -1,0 +1,151 @@
+# LoRA fine-tuning on NVIDIA GB10 / DGX Spark (Grace+Blackwell, ~96 GB unified).
+#
+# Why this exists (vs Makefile.qwen / Makefile.qwen9b):
+#   - GB10 is aarch64. Unsloth's Triton kernels are x86-only.
+#   - Unified memory means QLoRA's VRAM-savings aren't needed.
+#   - Uses HF Transformers + PEFT + TRL directly — full ARM64 support.
+#
+# REQUIRED parameter:
+#   DATASET=<path to .jsonl>     input dataset with {messages: [user, assistant]}
+#
+# OPTIONAL parameters:
+#   ADAPTER_NAME=<name>          output adapter name (default: gb10-ft-001)
+#   BASE_MODEL=<hf-id>           base model (default: Qwen/Qwen3.5-9B)
+#   MAX_SEQ_LEN=<int>            token cap per sample (default: 16384)
+#   EPOCHS=<int>                 training epochs (default: 3)
+#   RANK=<int>                   LoRA rank (default: 16)
+#   LR=<float>                   learning rate (default: 2e-4)
+#   BATCH_SIZE=<int>             micro-batch (default: 1)
+#   GRAD_ACCUM=<int>             gradient accumulation steps (default: 8)
+#   SAVE_EVERY=<int>             checkpoint frequency in steps (default: 30)
+#   QLORA=1                      use 4-bit base (default off — bf16 LoRA preferred)
+#
+# Pipeline:
+#   make -f Makefile.gb10 report  DATASET=path/to/seed.jsonl
+#   make -f Makefile.gb10 filter  DATASET=path/to/seed.jsonl
+#   make -f Makefile.gb10 smoke   DATASET=path/to/seed.jsonl
+#   make -f Makefile.gb10 train   DATASET=path/to/seed.jsonl ADAPTER_NAME=my-ft
+#   make -f Makefile.gb10 all     DATASET=path/to/seed.jsonl ADAPTER_NAME=my-ft
+#
+# Memory profile on GB10 with bf16 LoRA (no quantization):
+#   - 9B bf16 weights:    ~18 GB
+#   - LoRA + optimizer:   ~2 GB
+#   - Activations @ 16k:  ~20-30 GB (with grad checkpointing)
+#   - peak total:         ~40-50 GB (well within 96 GB unified)
+#
+# Wall-time expectation: ~4-8 hours for 280 samples × 3 epochs @ 16k seq_len.
+# (Without Unsloth's hand-tuned Triton kernels, training is 1.5-2× slower
+# than the same job on an x86+A100. NVIDIA's NeMo Framework would close that
+# gap if perf matters.)
+
+DATASET      ?=
+ADAPTER_NAME ?= gb10-ft-001
+BASE_MODEL   ?= Qwen/Qwen3.5-9B
+MAX_SEQ_LEN  ?= 16384
+EPOCHS       ?= 3
+RANK         ?= 16
+LR           ?= 2e-4
+BATCH_SIZE   ?= 1
+GRAD_ACCUM   ?= 8
+SAVE_EVERY   ?= 30
+QLORA        ?=
+
+TRAIN_SET    := $(basename $(DATASET))_train.jsonl
+ADAPTER_DIR  := data/adapters/$(ADAPTER_NAME)
+QLORA_FLAG   := $(if $(QLORA),--qlora,)
+
+.PHONY: check report filter smoke train serve all _require_dataset
+
+_require_dataset:
+	@test -n "$(DATASET)" || (echo "ERROR: pass DATASET=<path-to-jsonl>" && exit 1)
+
+check: _require_dataset
+	@echo "== Pre-flight =="
+	@test -f $(DATASET) || (echo "Missing dataset at $(DATASET)" && exit 1)
+	@echo "✓ dataset:     $(DATASET)"
+	@echo "✓ adapter:     $(ADAPTER_NAME)"
+	@echo "✓ base:        $(BASE_MODEL)"
+	@echo "✓ max_seq_len: $(MAX_SEQ_LEN)"
+	@echo "✓ precision:   $(if $(QLORA),4-bit QLoRA,bf16 LoRA)"
+	@python3 -c "import torch, transformers, peft, trl; \
+		print('✓ deps installed (torch', torch.__version__, ', arch=', \
+		      __import__('platform').machine(), ')')"
+
+report: check
+	@echo "== Tokenization report ($(BASE_MODEL) tokenizer) =="
+	python3 -m ml.distill_token_filter \
+		--input       $(DATASET) \
+		--output      /tmp/discard.jsonl \
+		--base        $(BASE_MODEL) \
+		--max-tokens  $(MAX_SEQ_LEN) \
+		--report-only
+
+filter: check $(TRAIN_SET)
+
+$(TRAIN_SET): $(DATASET)
+	@echo "== Step 1: token-cap $(DATASET) to $(MAX_SEQ_LEN) tokens =="
+	python3 -m ml.distill_token_filter \
+		--input       $(DATASET) \
+		--output      $(TRAIN_SET) \
+		--base        $(BASE_MODEL) \
+		--max-tokens  $(MAX_SEQ_LEN)
+
+smoke: $(TRAIN_SET)
+	@echo "== Smoke test (5 BIGGEST records, 1 epoch) =="
+	@echo "  Worst-case VRAM stress test — if these fit, the full run will too."
+	python3 -m ml.distill_train_hf \
+		--dataset      $(TRAIN_SET) \
+		--adapter-name $(ADAPTER_NAME)-smoke \
+		--base         $(BASE_MODEL) \
+		--epochs       1 \
+		--limit        5 \
+		--biggest-first \
+		--rank         $(RANK) \
+		--lr           $(LR) \
+		--max-seq-len  $(MAX_SEQ_LEN) \
+		--batch-size   1 \
+		--grad-accum   1 \
+		$(QLORA_FLAG)
+
+train: $(TRAIN_SET)
+	@echo "== bf16 LoRA fine-tune $(BASE_MODEL) (HF + PEFT + TRL) =="
+	@echo "  Adapter:       $(ADAPTER_NAME)"
+	@echo "  Train set:     $(TRAIN_SET)"
+	@echo "  max_seq_len:   $(MAX_SEQ_LEN)"
+	@echo "  epochs:        $(EPOCHS)"
+	@echo "  rank:          $(RANK)"
+	@echo "  lr:            $(LR)"
+	@echo "  bs × accum:    $(BATCH_SIZE) × $(GRAD_ACCUM)"
+	@echo "  precision:     $(if $(QLORA),4-bit QLoRA,bf16 LoRA)"
+	@echo ""
+	@echo "  Stop any inference server first to free VRAM:"
+	@echo "    python3 -m ml.cli stop"
+	@# Skip the confirmation prompt when stdin isn't a tty (nohup / pipes).
+	@if [ -t 0 ]; then \
+	  read -p "  Press Enter to start training (Ctrl+C to abort)..." _; \
+	fi
+	python3 -m ml.distill_train_hf \
+		--dataset      $(TRAIN_SET) \
+		--adapter-name $(ADAPTER_NAME) \
+		--base         $(BASE_MODEL) \
+		--epochs       $(EPOCHS) \
+		--rank         $(RANK) \
+		--lr           $(LR) \
+		--max-seq-len  $(MAX_SEQ_LEN) \
+		--batch-size   $(BATCH_SIZE) \
+		--grad-accum   $(GRAD_ACCUM) \
+		--save-every   $(SAVE_EVERY) \
+		$(QLORA_FLAG)
+
+serve:
+	@echo "== Serve $(BASE_MODEL) with adapter $(ADAPTER_NAME) =="
+	@echo "  Option A — NVIDIA NIM container (recommended on GB10):"
+	@echo "    docker run --rm --gpus all -p 8000:8000 \\"
+	@echo "      -v $(PWD)/$(ADAPTER_DIR):/adapter \\"
+	@echo "      nvcr.io/nim/qwen/qwen3.5-9b-instruct:latest"
+	@echo ""
+	@echo "  Option B — vLLM (if it installed on aarch64):"
+	@echo "    add a loras: entry pointing at $(ADAPTER_DIR) in"
+	@echo "    registry/models.yaml, then: python3 -m ml.cli serve <alias>"
+
+all: filter train
