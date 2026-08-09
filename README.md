@@ -449,6 +449,26 @@ python3 -m ml.cli status                         # backend, model, PID, URL, rea
 python3 -m ml.cli logs -f
 ```
 
+Benchmark the Gemma 4 NVFP4 server with vLLM's serving benchmark. The default
+run compares concurrency 1 and 2 using 2k-token prompts and 256-token outputs:
+
+```bash
+OPEN_API_KEY=... scripts/bench_vllm.sh
+
+# Remote server; both the host root and a URL ending in /v1 are accepted.
+OPEN_API_KEY=... \
+VLLM_BASE_URL=http://thinkstationpgx-fd9c.tail1c73a3.ts.net/v1 \
+scripts/bench_vllm.sh
+
+# Longer and more statistically stable run.
+OPEN_API_KEY=... INPUT_LEN=8192 OUTPUT_LEN=512 NUM_PROMPTS=32 \
+scripts/bench_vllm.sh
+```
+
+Results are printed as a concurrency comparison and saved as JSON under
+`data/benchmarks/vllm/`. Override `VLLM_MODEL`, `CONCURRENCIES`, `NUM_PROMPTS`,
+`NUM_WARMUPS`, `INPUT_LEN`, `OUTPUT_LEN`, or `RESULT_DIR` as needed.
+
 ### NIM
 
 ```bash

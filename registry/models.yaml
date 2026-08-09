@@ -515,7 +515,7 @@ models:
     reasoning_parser: gemma4
     tool_call_parser: gemma4
     enable_auto_tool_choice: true
-    language_model_only: true
+    #language_model_only: true
 
   # Gemma 4 31B-IT served via vLLM runtime FP8 quantization.
   # Targets GB10 / DGX Spark (128 GB unified): bf16 base (~62 GB) is loaded
