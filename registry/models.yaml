@@ -490,6 +490,33 @@ models:
       - --limit-mm-per-prompt
       - '{"image":0,"video":0}'
 
+  # Official NVIDIA ModelOpt NVFP4 checkpoint for Gemma 4 31B-IT.
+  # Blackwell-only; this profile targets the single GB10 GPU in DGX Spark.
+  # The checkpoint is ~33 GB on disk and carries an FP8 KV-cache scheme.
+  # Gemma 4 supports 256k natively, but 64k + two sequences is the safer
+  # day-to-day balance for agentic/text workloads on unified memory. Raise
+  # max_model_len when long-context capacity matters more than concurrency.
+  #
+  # Text-only mode intentionally skips the vision tower. Remove
+  # language_model_only to serve image/video inputs. Unlike Qwen3.6, this
+  # checkpoint has no MTP head, so speculative_config must not be copied.
+  # Requires a current vLLM with Gemma 4 and ModelOpt NVFP4 support.
+  gemma4-31b-it-nvfp4:
+    hf_id: nvidia/Gemma-4-31B-IT-NVFP4
+    vram_gb: 60
+    max_model_len: 65536
+    dtype: auto
+    quantization: modelopt
+    gpu_memory_utilization: 0.80
+    max_num_seqs: 2
+    max_num_batched_tokens: 8192
+    enable_prefix_caching: true
+    enable_chunked_prefill: true
+    reasoning_parser: gemma4
+    tool_call_parser: gemma4
+    enable_auto_tool_choice: true
+    language_model_only: true
+
   # Gemma 4 31B-IT served via vLLM runtime FP8 quantization.
   # Targets GB10 / DGX Spark (128 GB unified): bf16 base (~62 GB) is loaded
   # then quantized to FP8 (~16 GB resident). max_model_len 64k keeps KV

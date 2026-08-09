@@ -205,6 +205,7 @@ tuning. A representative slice of what's registered:
 | `qwen3.6-27b` | bf16 base — use this one for fine-tuning |
 | `qwen3.5-9b-fp8` / `-fp8-long` | 40k throughput entry / 128k thinking-mode entry |
 | `gemma4-12b-it` / `-it-fp8` / `-it-ft` | bf16 / runtime-FP8 / bf16 + LoRA adapter |
+| `gemma4-31b-it-nvfp4` | NVIDIA NVFP4, 64k text profile for DGX Spark — **Blackwell only** |
 | `gemma4-31b-it-fp8` | 31B via runtime FP8 quant — GB10-sized |
 | `qwen2.5-coder-32b` (llama.cpp) | Q8_0 GGUF with `--jinja` — real tool calling for agentic coders |
 
