@@ -9,5 +9,6 @@ venv/
 .DS_Store
 .vscode/
 .idea/
+.claude/worktrees/
 runs/
 wandb/
