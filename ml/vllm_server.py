@@ -27,6 +27,17 @@ def _normalize_rope_scaling(value) -> str | None:
     raise ValueError(f"rope_scaling must be a JSON string or dict, got {type(value).__name__}")
 
 
+def _normalize_json_option(name: str, value) -> str | None:
+    """Accept a JSON string or YAML mapping and emit compact JSON for vLLM."""
+    if value is None:
+        return None
+    if isinstance(value, str):
+        value = json.loads(value)
+    if isinstance(value, dict):
+        return json.dumps(value, separators=(",", ":"))
+    raise ValueError(f"{name} must be a JSON string or dict, got {type(value).__name__}")
+
+
 def _build_cmd(model_alias: str, hf_id: str, port: int) -> list[str]:
     cfg = get_models().get(model_alias, {})
     cmd = [
@@ -46,6 +57,18 @@ def _build_cmd(model_alias: str, hf_id: str, port: int) -> list[str]:
         cmd += ["--gpu-memory-utilization", str(gpu_mem)]
     if (max_seqs := cfg.get("max_num_seqs")):
         cmd += ["--max-num-seqs", str(max_seqs)]
+    if (max_batched_tokens := cfg.get("max_num_batched_tokens")):
+        cmd += ["--max-num-batched-tokens", str(max_batched_tokens)]
+
+    if cfg.get("enable_prefix_caching"):
+        cmd += ["--enable-prefix-caching"]
+    if cfg.get("enable_chunked_prefill"):
+        cmd += ["--enable-chunked-prefill"]
+
+    if (speculative := _normalize_json_option(
+        "speculative_config", cfg.get("speculative_config")
+    )):
+        cmd += ["--speculative-config", speculative]
 
     # YaRN / context extension. The registry value can be a YAML mapping
     # or an inline JSON string; vLLM expects a JSON string on the CLI.
@@ -61,6 +84,13 @@ def _build_cmd(model_alias: str, hf_id: str, port: int) -> list[str]:
     # Setting just --reasoning-parser works on both.
     if (parser := cfg.get("reasoning_parser")):
         cmd += ["--reasoning-parser", str(parser)]
+
+    if (parser := cfg.get("tool_call_parser")):
+        cmd += ["--tool-call-parser", str(parser)]
+    if cfg.get("enable_auto_tool_choice"):
+        cmd += ["--enable-auto-tool-choice"]
+    if cfg.get("language_model_only"):
+        cmd += ["--language-model-only"]
 
     # LoRA adapters: a list of {name, path, [rank]} entries. vLLM applies the
     # adapter on top of the base at runtime; clients request the LoRA by its

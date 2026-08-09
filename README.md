@@ -190,7 +190,7 @@ Three YAML files, one per backend. Adding a model is a registry edit — no code
 
 | File | Backend | Key fields |
 |------|---------|-----------|
-| [registry/models.yaml](registry/models.yaml) | vLLM | `hf_id`, `max_model_len`, `quantization`, `gpu_memory_utilization`, `max_num_seqs`, `rope_scaling`, `reasoning_parser`, `loras`, `extra_args` |
+| [registry/models.yaml](registry/models.yaml) | vLLM | `hf_id`, `max_model_len`, `quantization`, `gpu_memory_utilization`, `max_num_seqs`, `max_num_batched_tokens`, `enable_prefix_caching`, `enable_chunked_prefill`, `speculative_config`, `reasoning_parser`, `tool_call_parser`, `enable_auto_tool_choice`, `language_model_only`, `rope_scaling`, `loras`, `extra_args` |
 | [registry/llama_models.yaml](registry/llama_models.yaml) | llama.cpp | `hf_repo` or `gguf_path`, `n_gpu_layers`, `ctx_size`, `served_name`, `extra_args` |
 | [registry/nim_catalog.yaml](registry/nim_catalog.yaml) | NIM | `image`, `model_name`, `gpu_count`, `extra_env` |
 
@@ -219,9 +219,16 @@ Adding an entry:
     quantization: fp8
     gpu_memory_utilization: 0.85
     max_num_seqs: 4
-    extra_args:
-      - --max-num-batched-tokens
-      - "8192"
+    max_num_batched_tokens: 8192
+    enable_prefix_caching: true
+    enable_chunked_prefill: true
+    speculative_config:             # mapping or inline JSON string
+      method: mtp
+      num_speculative_tokens: 2
+    reasoning_parser: qwen3
+    tool_call_parser: qwen3_coder
+    enable_auto_tool_choice: true
+    language_model_only: true
 ```
 
 Then `python3 -m ml.cli models pull my-model && python3 -m ml.cli serve my-model`.
