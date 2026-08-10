@@ -1,4 +1,11 @@
 #!/usr/bin/env bash
+
+# `sh script` ignores the shebang on Ubuntu and starts Dash. Re-exec with
+# Bash because this script uses pipefail, arrays, and indirect expansion.
+if [ -z "${BASH_VERSION:-}" ]; then
+  exec bash "$0" "$@"
+fi
+
 set -euo pipefail
 
 # Benchmark an OpenAI-compatible vLLM server with deterministic random prompts.
