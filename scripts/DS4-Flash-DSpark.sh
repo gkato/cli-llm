@@ -35,8 +35,8 @@ Run on the NVIDIA/head Spark:
   WORKER_HOST=totalpass@thinkstationpgx-fd9c \
   MASTER_ADDR=192.168.100.10 \
   WORKER_VLLM_HOST_IP=192.168.100.11 \
-  NCCL_IB_HCA=roceP2p1s0f1 \
-  NCCL_SOCKET_IFNAME=enP2p1s0f1np1 \
+  NCCL_IB_HCA=rocep1s0f1,roceP2p1s0f1 \
+  NCCL_SOCKET_IFNAME=enp1s0f1np1,enP2p1s0f1np1 \
     python3 -m ml.cli dspark setup
 
   # 3. Build on both nodes, download/mirror weights, and start worker-first.
@@ -276,7 +276,8 @@ validate_value() {
 }
 
 check_local() {
-  local failed=0 hca nic
+  local failed=0 hca nic dev
+  local -a hcas nics
   for cmd in docker git ssh rsync nvidia-smi ibdev2netdev ip; do
     if command -v "${cmd}" >/dev/null 2>&1; then
       log "local command OK: ${cmd}"
@@ -302,24 +303,35 @@ check_local() {
 
   hca="$(env_value NCCL_IB_HCA)"
   nic="$(env_value NCCL_SOCKET_IFNAME)"
-  if ibdev2netdev 2>/dev/null | grep -F "${hca}" | grep -q '(Up)'; then
-    log "local RoCE device is Up: ${hca}"
-  else
-    warn "local RoCE device is not Up: ${hca}"
-    failed=1
-  fi
-  if ip -4 -o addr show dev "${nic}" 2>/dev/null | grep -q 'inet '; then
-    log "local fabric IPv4 found on ${nic}"
-  else
-    warn "local fabric interface has no IPv4 address: ${nic}"
-    failed=1
-  fi
+  IFS=',' read -r -a hcas <<<"${hca}"
+  IFS=',' read -r -a nics <<<"${nic}"
+  for dev in "${hcas[@]}"; do
+    if ibdev2netdev 2>/dev/null | grep -F "${dev}" | grep -q '(Up)'; then
+      log "local RoCE device is Up: ${dev}"
+    else
+      warn "local RoCE device is not Up: ${dev}"
+      failed=1
+    fi
+  done
+  for dev in "${nics[@]}"; do
+    if ip -4 -o addr show dev "${dev}" 2>/dev/null | grep -q 'inet '; then
+      log "local fabric IPv4 found on ${dev}"
+    else
+      warn "local fabric interface has no IPv4 address: ${dev}"
+      failed=1
+    fi
+    if [[ "$(cat "/sys/class/net/${dev}/mtu" 2>/dev/null || true)" != 9000 ]]; then
+      warn "local fabric MTU is not 9000: ${dev}"
+      failed=1
+    fi
+  done
 
   return "${failed}"
 }
 
 check_remote() {
-  local wh hca nic worker_ip failed=0
+  local wh hca nic worker_ip failed=0 dev
+  local -a hcas nics
   wh="$(worker_host)"
   hca="$(env_value NCCL_IB_HCA)"
   nic="$(env_value NCCL_SOCKET_IFNAME)"
@@ -337,18 +349,28 @@ check_remote() {
     warn "worker Docker Compose/GB10 check failed"
     failed=1
   fi
-  if ssh "${wh}" "ibdev2netdev | grep -F '${hca}' | grep -q '(Up)'"; then
-    log "worker RoCE device is Up: ${hca}"
-  else
-    warn "worker RoCE device is not Up: ${hca}"
-    failed=1
-  fi
-  if ssh "${wh}" "ip -4 -o addr show dev '${nic}' | grep -q 'inet '"; then
-    log "worker fabric IPv4 found on ${nic}"
-  else
-    warn "worker fabric interface has no IPv4 address: ${nic}"
-    failed=1
-  fi
+  IFS=',' read -r -a hcas <<<"${hca}"
+  IFS=',' read -r -a nics <<<"${nic}"
+  for dev in "${hcas[@]}"; do
+    if ssh "${wh}" "ibdev2netdev | grep -F '${dev}' | grep -q '(Up)'"; then
+      log "worker RoCE device is Up: ${dev}"
+    else
+      warn "worker RoCE device is not Up: ${dev}"
+      failed=1
+    fi
+  done
+  for dev in "${nics[@]}"; do
+    if ssh "${wh}" "ip -4 -o addr show dev '${dev}' | grep -q 'inet '"; then
+      log "worker fabric IPv4 found on ${dev}"
+    else
+      warn "worker fabric interface has no IPv4 address: ${dev}"
+      failed=1
+    fi
+    if ! ssh "${wh}" "test \"\$(cat '/sys/class/net/${dev}/mtu')\" = 9000"; then
+      warn "worker fabric MTU is not 9000: ${dev}"
+      failed=1
+    fi
+  done
   if ping -c 2 -W 2 "${worker_ip}" >/dev/null 2>&1; then
     log "head can reach worker fabric IP: ${worker_ip}"
   else
