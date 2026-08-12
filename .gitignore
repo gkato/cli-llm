@@ -12,3 +12,5 @@ venv/
 .claude/worktrees/
 runs/
 wandb/
+ocr-output
+ocr-output/
