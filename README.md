@@ -4,13 +4,14 @@ Local LLM inference and fine-tuning on your own hardware. Built for the **NVIDIA
 (GB10)** — Grace CPU + Blackwell GPU with 128 GB unified memory — and works on any local
 box with an NVIDIA GPU.
 
-One CLI, three serving backends, all speaking the same OpenAI-compatible `/v1` API:
+One CLI, four serving backends, all speaking the same OpenAI-compatible `/v1` API:
 
 | Backend | Runs | Weights | Command |
 |---------|------|---------|---------|
 | **vLLM** | pip-installed Python process | safetensors (bf16 / FP8 / NVFP4 / AWQ) | `serve <alias>` |
 | **llama.cpp** | local `llama-server` binary | GGUF | `serve llama <id>` |
 | **NIM** | Docker container (TensorRT-LLM) | NVIDIA-packaged | `nim serve <alias>` |
+| **DSpark cluster** | patched Docker/vLLM on two GB10 nodes | DeepSeek V4 Flash 0731 | `dspark <action>` |
 
 Plus a LoRA fine-tuning path that runs on the same box (aarch64-native, no Unsloth).
 
@@ -115,6 +116,26 @@ python3 -m ml.cli nim serve qwen3.5-27b-nim
 python3 -m ml.cli nim status
 ```
 
+### DSpark cluster (two linked GB10 systems)
+
+NVIDIA publishes a generic DeepSeek V4 Flash NIM, but this project's `nim` backend starts
+one local container and cannot orchestrate the two-node 0731/DSpark profile. Its fast
+dual-Spark path therefore uses a custom Stage-C vLLM image with TP=2, DSpark speculative
+decoding, B12X MoE kernels, and NVFP4 MLA KV cache. Run these on the head node:
+
+```bash
+python3 -m ml.cli dspark network     # QSFP/RoCE state and setup guidance
+python3 -m ml.cli dspark setup       # clone, configure, and check both nodes
+python3 -m ml.cli dspark build       # build and sync the patched image
+python3 -m ml.cli dspark download    # download/verify and mirror weights
+python3 -m ml.cli dspark start       # worker-first launch on port 8888
+python3 -m ml.cli dspark smoke
+```
+
+The setup command prints the required fabric variables. Full documentation and overrides
+are in [`scripts/DS4-Flash-DSpark.sh`](scripts/DS4-Flash-DSpark.sh). The generated upstream
+checkout and its `.env.dspark` live under ignored `data/dspark/` by default.
+
 ### Call it
 
 ```bash
@@ -136,10 +157,12 @@ for llama.cpp, a LoRA `name` if the registry entry defines adapters.
 python3 -m ml.cli stop                        # works for vLLM or llama.cpp
 python3 -m ml.cli restart gemma4-12b-it       # stop + start a different vLLM model
 python3 -m ml.cli nim stop                    # NIM has its own lifecycle
+python3 -m ml.cli dspark stop                 # stops both cluster nodes
 ```
 
-**One server at a time.** All three backends bind port 8000. vLLM and llama.cpp share one
-state file (`data/server.json`) and one `stop`; NIM lives under its own `nim` subgroup.
+**One GPU workload at a time.** The local backends bind port 8000; DSpark defaults to 8888
+but still needs the full unified-memory pool on both nodes. vLLM and llama.cpp share one
+state file (`data/server.json`) and one `stop`; NIM and DSpark have separate lifecycles.
 Stop whatever's running before starting something else.
 
 ---
@@ -175,6 +198,7 @@ No code changes — register a model with provider `openai`, the base URL above,
 | Serving safetensors, need LoRA-at-runtime, long context, prefix caching | **vLLM** |
 | GGUF weights, huge quantized context, tight memory, or vLLM won't build | **llama.cpp** |
 | Want NVIDIA-tuned TensorRT-LLM kernels and NVFP4 on Blackwell | **NIM** |
+| DeepSeek V4 Flash 0731 across two linked GB10 nodes | **DSpark cluster** |
 | Fine-tuning | none — stop the server, run `Makefile.gb10` |
 
 On GB10, vLLM is the day-to-day workhorse (LoRA adapters and the registry live there).

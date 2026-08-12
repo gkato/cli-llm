@@ -1,3 +1,6 @@
+import subprocess
+from pathlib import Path
+
 import click
 
 from ml.config import (
@@ -36,6 +39,13 @@ COMMON WORKFLOWS
     ml.cli nim stop                       # shut down
 
 \b
+  Two-node DSpark serving (DeepSeek V4 Flash 0731):
+    ml.cli dspark setup                   # configure and validate both nodes
+    ml.cli dspark build                   # build/sync patched vLLM image
+    ml.cli dspark download                # download and mirror model weights
+    ml.cli dspark start                   # worker-first TP=2 launch
+
+\b
   Box diagnostic:
     ml.cli info                           # GPU, CPU arch, library versions
 
@@ -50,7 +60,7 @@ ONE SERVER AT A TIME
 DOCS
 
 \b
-  Registry of models:    registry/models.yaml      (vLLM-served)
+  Registry of models:    registry/models.yaml      (vLLM and DSpark)
   NIM catalog:           registry/nim_catalog.yaml (Docker-served)
   README:                README.md
 """
@@ -58,13 +68,14 @@ DOCS
 
 @click.group(epilog=CLI_EPILOG)
 def cli():
-    """ml-compute — OpenAI-compatible local inference (vLLM, llama.cpp, or NIM).
+    """ml-compute — OpenAI-compatible local and two-node inference.
 
     \b
-    Three serving backends behind a single CLI:
+    Four serving backends behind a single CLI:
       • vLLM      pip-installed Python process, safetensors →  `ml.cli serve <alias>`
       • llama.cpp local llama-server process, GGUF          →  `ml.cli serve llama <id>`
       • NIM       NVIDIA TensorRT-LLM container, Docker      →  `ml.cli nim serve <alias>`
+      • DSpark    patched Docker vLLM, two GB10 nodes, TP=2  →  `ml.cli dspark <action>`
 
     All expose the same OpenAI-compatible /v1/* API. Run `ml.cli info` to
     see what's installed on this box and which backend is recommended for
@@ -90,11 +101,18 @@ def models_list():
     local = {m["hf_id"]: m for m in list_local()}
 
     click.echo("Registered models:")
+    alias_width = max(14, *(len(alias) for alias in registry))
     for alias, cfg in registry.items():
         hf_id = cfg["hf_id"]
         mark = "✓" if is_downloaded(hf_id) else " "
         size = format_size(local[hf_id]["size_bytes"]) if hf_id in local else "—"
-        click.echo(f"  [{mark}] {alias:14} {hf_id:42} {size:>10}  ({cfg['vram_gb']}GB VRAM)")
+        backend = cfg.get("serve_backend", "vllm")
+        nodes = int(cfg.get("nodes", 1))
+        memory = "aggregate" if nodes > 1 else "VRAM"
+        click.echo(
+            f"  [{mark}] {alias:{alias_width}} {hf_id:42} {size:>10}  "
+            f"({cfg['vram_gb']}GB {memory}, {backend})"
+        )
 
     extra = [m for m in local if m not in {c["hf_id"] for c in registry.values()}]
     if extra:
@@ -522,6 +540,50 @@ def nim_logs(follow: bool, lines: int):
     from ml.nim_server import tail_logs
 
     tail_logs(lines=lines, follow=follow)
+
+
+# ---------------------------------------------------------------------------
+# DSpark — patched two-node vLLM recipe for DeepSeek V4 Flash
+# ---------------------------------------------------------------------------
+
+DSPARK_ACTIONS = [
+    "network", "bootstrap", "configure", "check", "setup", "build",
+    "download", "start", "status", "smoke", "logs", "stop", "update",
+    "all", "path", "help",
+]
+
+
+@cli.command("dspark")
+@click.argument(
+    "action",
+    required=False,
+    default="help",
+    type=click.Choice(DSPARK_ACTIONS, case_sensitive=False),
+)
+def dspark_cmd(action: str):
+    """Manage DeepSeek V4 Flash across two linked GB10 systems.
+
+    \b
+    This is a dedicated cluster backend, not NVIDIA NIM and not the local
+    `serve vllm` path. It delegates to scripts/DS4-Flash-DSpark.sh, which
+    installs and operates the maintained patched Docker/vLLM TP=2 recipe.
+
+    \b
+    Typical sequence:
+      ml.cli dspark network
+      ml.cli dspark setup
+      ml.cli dspark build
+      ml.cli dspark download
+      ml.cli dspark start
+      ml.cli dspark smoke
+
+    Run `ml.cli dspark help` for configuration variables and full details.
+    """
+    script = Path(__file__).resolve().parent.parent / "scripts" / "DS4-Flash-DSpark.sh"
+    if not script.is_file():
+        raise click.ClickException(f"DSpark recipe not found: {script}")
+    result = subprocess.run([str(script), action], check=False)
+    raise click.exceptions.Exit(result.returncode)
 
 
 # ---------------------------------------------------------------------------

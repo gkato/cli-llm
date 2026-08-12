@@ -40,6 +40,14 @@ def _normalize_json_option(name: str, value) -> str | None:
 
 def _build_cmd(model_alias: str, hf_id: str, port: int) -> list[str]:
     cfg = get_models().get(model_alias, {})
+    backend = cfg.get("serve_backend", "vllm")
+    if backend != "vllm":
+        recipe = cfg.get("external_recipe", f"scripts/{backend}.sh")
+        raise RuntimeError(
+            f"{model_alias!r} uses the {backend!r} backend, not local vLLM. "
+            f"Run `python3 -m ml.cli {backend} setup`, then "
+            f"`python3 -m ml.cli {backend} start` (recipe: {recipe})."
+        )
     cmd = [
         "vllm", "serve", hf_id,
         "--host", VLLM_HOST,

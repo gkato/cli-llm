@@ -691,3 +691,24 @@ models:
       - "16384"
       - --limit-mm-per-prompt
       - '{"image":0,"video":0}'
+
+  # Official DeepSeek V4 Flash 0731 on two linked GB10 systems (TP=2).
+  # This is intentionally registered here for discovery, but it cannot use the
+  # local `ml.cli serve` path. Its Stage-C image contains DSpark, Patch 4,
+  # B12X MoE kernels, and the experimental NVFP4 MLA KV-cache implementation.
+  # Operate it with: python3 -m ml.cli dspark <setup|build|download|start|...>
+  deepseek-v4-flash-0731-dspark:
+    hf_id: deepseek-ai/DeepSeek-V4-Flash-0731
+    served_model_name: deepseek-v4-flash-0731
+    serve_backend: dspark
+    external_recipe: scripts/DS4-Flash-DSpark.sh
+    nodes: 2
+    tensor_parallel_size: 2
+    vram_gb: 256
+    max_model_len: 1048576
+    max_num_seqs: 12
+    max_num_batched_tokens: 8192
+    gpu_memory_utilization: 0.85
+    kv_cache_dtype: nvfp4_ds_mla
+    speculative_method: dspark
+    speculative_tokens: 5
