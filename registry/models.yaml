@@ -421,6 +421,31 @@ models:
     enable_auto_tool_choice: true
     language_model_only: true
 
+  # === Qwen 3.8 — 27B ===
+  qwen3.8-27b-nvfp4:
+    hf_id: unsloth/Qwen3.8-27B-NVFP4
+    vram_gb: 60
+    max_model_len: 65536
+    dtype: auto
+
+    # Important: omit quantization.
+    # The checkpoint declares compressed-tensors itself.
+
+    gpu_memory_utilization: 0.80
+    max_num_seqs: 2
+    max_num_batched_tokens: 8192
+    enable_prefix_caching: true
+    enable_chunked_prefill: true
+
+    speculative_config:
+      method: mtp
+      num_speculative_tokens: 2
+
+    reasoning_parser: qwen3
+    tool_call_parser: qwen3_coder
+    enable_auto_tool_choice: true
+    language_model_only: true
+
   # bf16 — preferred on Blackwell (sm_120+). Uses native bf16 tensor cores;
   # AWQ Marlin falls back to a slow generic path on Blackwell, so unless
   # you're VRAM-constrained, this is faster than the 4-bit variant.

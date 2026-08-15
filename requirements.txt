@@ -1,8 +1,8 @@
 # Core inference (vLLM brings its own torch + transformers).
-# Qwen 3.5 needs vLLM ≥ 0.21 (the `qwen3_5` model type was added there),
-# which in turn requires CUDA 13 / driver ≥ 580. If your pod has an older
-# driver (e.g. RunPod stock RTX hosts on driver 12.4-12.8), pin vllm==0.10.2
-# and use a Qwen 3 model instead — Qwen 3.5 will not load on those.
+# Qwen 3.5 needs vLLM ≥ 0.21 (the `qwen3_5` model type was added there).
+# This project requires vLLM ≥ 0.27, which requires a compatible CUDA
+# runtime and NVIDIA driver. Older hosts must use a legacy project revision
+# with an older vLLM and model family.
 #
 # NOTE: This file is the x86_64 path. On NVIDIA GB10 / DGX Spark (aarch64),
 # setup.sh installs a different set — Unsloth and flash-attn don't ship
@@ -11,8 +11,8 @@
 #
 # Gemma 4 12B-IT bf16 (gemma4_unified arch) needs a vLLM that includes the
 # cuda-graph shape-mismatch fix (the `--enforce-eager` workaround was for
-# 0.21.0). Left unpinned to pick up the fix — use a current release.
-vllm
+# 0.21.0).
+vllm>=0.27
 huggingface-hub
 hf-transfer
 
