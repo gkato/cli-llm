@@ -81,7 +81,7 @@ if [ "$IS_ARM64" -eq 1 ]; then
     transformers peft accelerate trl datasets safetensors \
     sentencepiece protobuf tokenizers
   # vLLM on ARM64 is experimental; try, fall back gracefully if it fails
-  if "$PY" -m pip install $PIP_FLAGS "vllm>=0.27" 2>/tmp/vllm_install.log; then
+  if "$PY" -m pip install $PIP_FLAGS "vllm[bench]>=0.27" 2>/tmp/vllm_install.log; then
     echo "  ✓ vLLM installed (ARM64 build)"
   else
     echo "  ⚠ vLLM install failed on ARM64 — see /tmp/vllm_install.log"

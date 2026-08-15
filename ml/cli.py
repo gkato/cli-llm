@@ -548,7 +548,7 @@ def nim_logs(follow: bool, lines: int):
 
 DSPARK_ACTIONS = [
     "network", "bootstrap", "configure", "check", "setup", "build",
-    "download", "start", "status", "smoke", "logs", "stop", "update",
+    "download", "start", "status", "memory", "smoke", "logs", "stop", "update",
     "all", "path", "help",
 ]
 

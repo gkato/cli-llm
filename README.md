@@ -121,20 +121,31 @@ python3 -m ml.cli nim status
 NVIDIA publishes a generic DeepSeek V4 Flash NIM, but this project's `nim` backend starts
 one local container and cannot orchestrate the two-node 0731/DSpark profile. Its fast
 dual-Spark path therefore uses a custom Stage-C vLLM image with TP=2, DSpark speculative
-decoding, B12X MoE kernels, and NVFP4 MLA KV cache. Run these on the head node:
+decoding, B12X MoE kernels, and NVFP4 MLA KV cache. The committed machine profile uses
+a 256K context ceiling and 0.74 memory utilization on both ranks, leaving room for a
+16 GiB Harness on `thinkstationpgx-fd9c`. Run these on the head node:
 
 ```bash
 python3 -m ml.cli dspark network     # QSFP/RoCE state and setup guidance
 python3 -m ml.cli dspark setup       # clone, configure, and check both nodes
 python3 -m ml.cli dspark build       # build and sync the patched image
 python3 -m ml.cli dspark download    # download/verify and mirror weights
-python3 -m ml.cli dspark start       # worker-first launch on port 8888
+scripts/start-DS4-Flash-DSpark.sh    # worker-first launch on port 8888
 python3 -m ml.cli dspark smoke
 ```
 
-The setup command prints the required fabric variables. Full documentation and overrides
-are in [`scripts/DS4-Flash-DSpark.sh`](scripts/DS4-Flash-DSpark.sh). The generated upstream
-checkout and its `.env.dspark` live under ignored `data/dspark/` by default.
+For the first deployment, the setup/build/download/start sequence can be run as:
+
+```bash
+scripts/start-DS4-Flash-DSpark.sh --first-run
+```
+
+Machine addresses, both connected RoCE interfaces, cache paths, context, and memory
+budgets are in [`config/dspark-spark4e89-thinkstationpgx.env`](config/dspark-spark4e89-thinkstationpgx.env).
+The lifecycle implementation is in [`scripts/DS4-Flash-DSpark.sh`](scripts/DS4-Flash-DSpark.sh).
+After launch, `python3 -m ml.cli dspark memory` verifies that the worker has at least
+24 GiB `MemAvailable` before the Harness starts. The generated upstream checkout and
+its `.env.dspark` live under ignored `data/dspark/` by default.
 
 ### Call it
 
@@ -160,8 +171,9 @@ python3 -m ml.cli nim stop                    # NIM has its own lifecycle
 python3 -m ml.cli dspark stop                 # stops both cluster nodes
 ```
 
-**One GPU workload at a time.** The local backends bind port 8000; DSpark defaults to 8888
-but still needs the full unified-memory pool on both nodes. vLLM and llama.cpp share one
+**One model workload at a time.** The local backends bind port 8000; DSpark defaults to
+8888 and uses a symmetric memory allocation on both nodes. The 256K coexistence profile
+reserves worker capacity for the separately capped Harness. vLLM and llama.cpp share one
 state file (`data/server.json`) and one `stop`; NIM and DSpark have separate lifecycles.
 Stop whatever's running before starting something else.
 
@@ -473,16 +485,25 @@ python3 -m ml.cli status                         # backend, model, PID, URL, rea
 python3 -m ml.cli logs -f
 ```
 
-Benchmark the Gemma 4 NVFP4 server with vLLM's serving benchmark. The default
-run compares concurrency 1 and 2 using 2k-token prompts and 256-token outputs:
+Benchmark the running server with vLLM's native serving benchmark. For a quick
+throughput smoke test (8 requests at each concurrency, 512 input tokens, and
+128 output tokens):
 
 ```bash
-OPEN_API_KEY=... scripts/bench_vllm.sh
+scripts/bench_vllm.sh quick
+
+# Explicit model/tokenizer (useful when benchmarking a remote server).
+OPEN_API_KEY=... \
+VLLM_MODEL=unsloth/Qwen3.8-27B-NVFP4 \
+scripts/bench_vllm.sh quick
+
+# Standard run: 16 requests, 2k input tokens, and 256 output tokens.
+scripts/bench_vllm.sh
 
 # Remote server; both the host root and a URL ending in /v1 are accepted.
 OPEN_API_KEY=... \
 VLLM_BASE_URL=http://thinkstationpgx-fd9c.tail1c73a3.ts.net/v1 \
-scripts/bench_vllm.sh
+scripts/bench_vllm.sh quick
 
 # Longer and more statistically stable run.
 OPEN_API_KEY=... INPUT_LEN=8192 OUTPUT_LEN=512 NUM_PROMPTS=32 \
@@ -490,7 +511,9 @@ scripts/bench_vllm.sh
 ```
 
 Results are printed as a concurrency comparison and saved as JSON under
-`data/benchmarks/vllm/`. Override `VLLM_MODEL`, `CONCURRENCIES`, `NUM_PROMPTS`,
+`data/benchmarks/vllm/`. When `VLLM_MODEL` is omitted, vLLM uses the first model
+reported by `/v1/models`; `.env.local` supplies the local `API_KEY` when present.
+Override `VLLM_MODEL`, `VLLM_TOKENIZER`, `CONCURRENCIES`, `NUM_PROMPTS`,
 `NUM_WARMUPS`, `INPUT_LEN`, `OUTPUT_LEN`, or `RESULT_DIR` as needed.
 
 ### NIM

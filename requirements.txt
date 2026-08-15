@@ -12,7 +12,7 @@
 # Gemma 4 12B-IT bf16 (gemma4_unified arch) needs a vLLM that includes the
 # cuda-graph shape-mismatch fix (the `--enforce-eager` workaround was for
 # 0.21.0).
-vllm>=0.27
+vllm[bench]>=0.27
 huggingface-hub
 hf-transfer
 

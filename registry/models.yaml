@@ -729,11 +729,17 @@ models:
     external_recipe: scripts/DS4-Flash-DSpark.sh
     nodes: 2
     tensor_parallel_size: 2
-    vram_gb: 256
-    max_model_len: 1048576
-    max_num_seqs: 12
-    max_num_batched_tokens: 8192
-    gpu_memory_utilization: 0.85
+    # Coexistence profile: ~90 GiB per rank, leaving room for a 16 GiB Harness
+    # plus operating headroom on the Lenovo worker.
+    vram_gb: 190
+    max_model_len: 262144
+    max_num_seqs: 4
+    max_num_batched_tokens: 4096
+    gpu_memory_utilization: 0.74
     kv_cache_dtype: nvfp4_ds_mla
     speculative_method: dspark
     speculative_tokens: 5
+    harness_host: thinkstationpgx-fd9c
+    harness_memory_limit_gb: 16
+    worker_available_target_gb: 24
+    cluster_profile: config/dspark-spark4e89-thinkstationpgx.env

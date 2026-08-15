@@ -9,12 +9,15 @@ fi
 set -euo pipefail
 
 # Benchmark an OpenAI-compatible vLLM server with deterministic random prompts.
-# Defaults exercise the Gemma 4 NVFP4 profile at its configured concurrency
-# ceiling. Override any setting with an environment variable; for example:
+# With no profile, the standard run compares concurrency 1 and 2. The `quick`
+# profile uses a smaller workload for a fast throughput smoke test. Override
+# any setting with an environment variable; for example:
 #
-#   OPEN_API_KEY=... \
+#   scripts/bench_vllm.sh quick
+#
+#   OPEN_API_KEY=... VLLM_MODEL=org/model \
 #   VLLM_BASE_URL=http://thinkstationpgx-fd9c.tail1c73a3.ts.net/v1 \
-#   scripts/bench_vllm.sh
+#   scripts/bench_vllm.sh quick
 #
 # For a longer-context run:
 #
@@ -24,23 +27,70 @@ set -euo pipefail
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 PROJECT_ROOT=$(cd -- "$SCRIPT_DIR/.." && pwd)
 
+usage() {
+  cat <<'EOF'
+Usage: scripts/bench_vllm.sh [standard|quick]
+
+Profiles:
+  standard  16 requests, 2048 input tokens, 256 output tokens (default)
+  quick      8 requests,  512 input tokens, 128 output tokens
+
+Both profiles test concurrency 1 and 2 and save JSON results. Environment
+variables override profile defaults; see README.md for the full list.
+EOF
+}
+
+PROFILE=${1:-standard}
+case "$PROFILE" in
+  standard)
+    DEFAULT_NUM_PROMPTS=16
+    DEFAULT_NUM_WARMUPS=2
+    DEFAULT_INPUT_LEN=2048
+    DEFAULT_OUTPUT_LEN=256
+    ;;
+  quick)
+    DEFAULT_NUM_PROMPTS=8
+    DEFAULT_NUM_WARMUPS=1
+    DEFAULT_INPUT_LEN=512
+    DEFAULT_OUTPUT_LEN=128
+    ;;
+  -h|--help)
+    usage
+    exit 0
+    ;;
+  *)
+    echo "Unknown benchmark profile: $PROFILE" >&2
+    usage >&2
+    exit 2
+    ;;
+esac
+
 BASE_URL=${VLLM_BASE_URL:-http://127.0.0.1:8000}
 BASE_URL=${BASE_URL%/}
 BASE_URL=${BASE_URL%/v1}
 
-MODEL=${VLLM_MODEL:-nvidia/Gemma-4-31B-IT-NVFP4}
-NUM_PROMPTS=${NUM_PROMPTS:-16}
-NUM_WARMUPS=${NUM_WARMUPS:-2}
-INPUT_LEN=${INPUT_LEN:-2048}
-OUTPUT_LEN=${OUTPUT_LEN:-256}
+MODEL=${VLLM_MODEL:-}
+TOKENIZER=${VLLM_TOKENIZER:-$MODEL}
+NUM_PROMPTS=${NUM_PROMPTS:-$DEFAULT_NUM_PROMPTS}
+NUM_WARMUPS=${NUM_WARMUPS:-$DEFAULT_NUM_WARMUPS}
+INPUT_LEN=${INPUT_LEN:-$DEFAULT_INPUT_LEN}
+OUTPUT_LEN=${OUTPUT_LEN:-$DEFAULT_OUTPUT_LEN}
 CONCURRENCIES=${CONCURRENCIES:-"1 2"}
 SEED=${SEED:-42}
 RESULT_DIR=${RESULT_DIR:-$PROJECT_ROOT/data/benchmarks/vllm}
 RUN_ID=${RUN_ID:-$(date +%Y%m%d-%H%M%S)}
 
 BENCH_API_KEY=${OPEN_API_KEY:-${OPENAI_API_KEY:-}}
+if [[ -z "$BENCH_API_KEY" && -f "$PROJECT_ROOT/.env.local" ]]; then
+  while IFS='=' read -r env_name env_value; do
+    if [[ "$env_name" == "API_KEY" ]]; then
+      BENCH_API_KEY=$env_value
+      break
+    fi
+  done < "$PROJECT_ROOT/.env.local"
+fi
 if [[ -z "$BENCH_API_KEY" ]]; then
-  echo "Set OPEN_API_KEY (or OPENAI_API_KEY) before running the benchmark." >&2
+  echo "Set OPEN_API_KEY (or OPENAI_API_KEY), or add API_KEY to .env.local." >&2
   exit 2
 fi
 export OPENAI_API_KEY=$BENCH_API_KEY
@@ -76,7 +126,9 @@ if ! curl --fail --silent --show-error \
 fi
 
 mkdir -p "$RESULT_DIR"
-MODEL_SLUG=${MODEL//\//-}
+MODEL_DISPLAY=${MODEL:-"server default"}
+MODEL_SLUG=${MODEL:-server-default}
+MODEL_SLUG=${MODEL_SLUG//\//-}
 read -r -a CONCURRENCY_VALUES <<< "$CONCURRENCIES"
 if (( ${#CONCURRENCY_VALUES[@]} == 0 )); then
   echo "CONCURRENCIES must contain at least one positive integer." >&2
@@ -90,11 +142,11 @@ for concurrency in "${CONCURRENCY_VALUES[@]}"; do
     exit 2
   fi
 
-  result_filename="${MODEL_SLUG}-c${concurrency}-${INPUT_LEN}in-${OUTPUT_LEN}out-${RUN_ID}.json"
+  result_filename="${MODEL_SLUG}-${PROFILE}-c${concurrency}-${INPUT_LEN}in-${OUTPUT_LEN}out-${RUN_ID}.json"
   RESULT_FILES+=("$RESULT_DIR/$result_filename")
 
   echo
-  echo "Benchmarking $MODEL"
+  echo "Benchmarking $MODEL_DISPLAY ($PROFILE profile)"
   echo "  Server:       $BASE_URL"
   echo "  Concurrency:  $concurrency"
   echo "  Requests:     $NUM_PROMPTS (+ $NUM_WARMUPS warmups)"
@@ -102,12 +154,19 @@ for concurrency in "${CONCURRENCY_VALUES[@]}"; do
   echo "  Result:       $RESULT_DIR/$result_filename"
   echo
 
+  MODEL_ARGS=()
+  if [[ -n "$MODEL" ]]; then
+    MODEL_ARGS+=(--model "$MODEL")
+  fi
+  if [[ -n "$TOKENIZER" ]]; then
+    MODEL_ARGS+=(--tokenizer "$TOKENIZER")
+  fi
+
   "$VLLM_BIN" bench serve \
     --backend openai-chat \
     --base-url "$BASE_URL" \
     --endpoint /v1/chat/completions \
-    --model "$MODEL" \
-    --tokenizer "$MODEL" \
+    "${MODEL_ARGS[@]}" \
     --dataset-name random \
     --random-input-len "$INPUT_LEN" \
     --random-output-len "$OUTPUT_LEN" \
@@ -116,6 +175,7 @@ for concurrency in "${CONCURRENCY_VALUES[@]}"; do
     --num-warmups "$NUM_WARMUPS" \
     --max-concurrency "$concurrency" \
     --temperature 0 \
+    --ignore-eos \
     --seed "$SEED" \
     --percentile-metrics ttft,tpot,itl,e2el \
     --metric-percentiles 50,90,95,99 \
