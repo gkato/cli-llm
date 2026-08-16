@@ -79,7 +79,7 @@ Configuration environment variables:
     WORKER_HF_CACHE          Worker Hugging Face cache
     DSPARK_RECIPE_DIR        Upstream checkout on the head
     VLLM_HOST                API bind address (default: 0.0.0.0)
-    VLLM_PORT                API port (default: 8888)
+    DSPARK_VLLM_PORT         DSpark API port override (profile default: 8888)
     KV_CACHE_DTYPE           nvfp4_ds_mla (default) or fp8_ds_mla
     MAX_MODEL_LEN            Profile default 262144 (256K)
     MAX_NUM_SEQS             Profile default 4
@@ -115,6 +115,12 @@ profile_value() {
     return
   fi
 
+  value="$(profile_file_value "${key}" "${fallback}")"
+  printf '%s' "${value:-${fallback}}"
+}
+
+profile_file_value() {
+  local key="$1" fallback="${2:-}" value=""
   if [[ -f "${CONFIG_FILE}" ]]; then
     value="$(sed -n "s/^${key}=//p" "${CONFIG_FILE}" | tail -n 1)"
   fi
@@ -195,7 +201,11 @@ configure() {
   set_env_value DSPARK_MODEL "$(profile_value DSPARK_MODEL "${MODEL_DEFAULT}")"
   set_env_value SERVED_MODEL_NAME "$(profile_value SERVED_MODEL_NAME "${SERVED_MODEL_DEFAULT}")"
   set_env_value VLLM_HOST "$(profile_value VLLM_HOST 0.0.0.0)"
-  set_env_value VLLM_PORT "$(profile_value VLLM_PORT 8888)"
+  # ml.config loads the generic .env.local, which normally contains
+  # VLLM_PORT=8000 for single-node backends. Do not let that implicit value
+  # override this cluster's dedicated port. A deliberate DSpark override uses
+  # DSPARK_VLLM_PORT instead.
+  set_env_value VLLM_PORT "$(profile_value DSPARK_VLLM_PORT "$(profile_file_value VLLM_PORT 8888)")"
   set_env_value MAX_MODEL_LEN "$(profile_value MAX_MODEL_LEN 262144)"
   set_env_value MAX_NUM_SEQS "$(profile_value MAX_NUM_SEQS 4)"
   set_env_value MAX_NUM_BATCHED_TOKENS "$(profile_value MAX_NUM_BATCHED_TOKENS 4096)"
@@ -494,7 +504,7 @@ start_cluster() {
   check_config
   ensure_gpus_free
   check_gpu_containers
-  run_upstream start-deepseek-v4-flash-dspark.sh
+  run_upstream_with_api start-deepseek-v4-flash-dspark.sh
   if ! show_memory; then
     warn "The model is running, but the Harness memory target was not met"
   fi
@@ -600,6 +610,16 @@ run_upstream() {
   (cd "${RECIPE_DIR}" && "./${script}" "$@")
 }
 
+run_upstream_with_api() (
+  local port
+  require_env_file
+  port="$(env_value VLLM_PORT)"
+  port="${port:-8888}"
+  export API_URL="${API_URL:-http://127.0.0.1:${port}/v1/models}"
+  export CHAT_URL="${CHAT_URL:-http://127.0.0.1:${port}/v1/chat/completions}"
+  run_upstream "$@"
+)
+
 run_upstream_build() (
   local dockerfile backup_file patched_file frontend_mode
   dockerfile="${RECIPE_DIR}/recipe/Dockerfile.dspark-runtime-overlay"
@@ -640,10 +660,10 @@ case "${action}" in
   build) check_config; run_upstream_build ;;
   download) check_config; run_upstream prepare-dspark-model-cache.sh ;;
   start) start_cluster ;;
-  status) run_upstream status-deepseek-v4-flash-dspark.sh ;;
+  status) run_upstream_with_api status-deepseek-v4-flash-dspark.sh ;;
   gpu-check) check_gpu_containers ;;
   memory) show_memory ;;
-  smoke) run_upstream smoke-deepseek-v4-flash-dspark.sh ;;
+  smoke) run_upstream_with_api smoke-deepseek-v4-flash-dspark.sh ;;
   logs) run_upstream logs-deepseek-v4-flash-dspark.sh ;;
   stop) run_upstream stop-deepseek-v4-flash-dspark.sh ;;
   update)

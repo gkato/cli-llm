@@ -154,6 +154,10 @@ named by the error with `sudo systemctl restart nvidia-cdi-refresh.service`, the
 rerun `python3 -m ml.cli dspark gpu-check`. This isolates container/driver failures
 from later NCCL and model-loading failures.
 
+DSpark uses the profile's port 8888 independently of the single-node
+`VLLM_PORT=8000` in `.env.local`. Use `DSPARK_VLLM_PORT` for an intentional cluster
+override; readiness, status, and smoke checks follow the resolved DSpark port.
+
 ### Call it
 
 ```bash
