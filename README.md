@@ -122,7 +122,7 @@ NVIDIA publishes a generic DeepSeek V4 Flash NIM, but this project's `nim` backe
 one local container and cannot orchestrate the two-node 0731/DSpark profile. Its fast
 dual-Spark path therefore uses a custom Stage-C vLLM image with TP=2, DSpark speculative
 decoding, B12X MoE kernels, and NVFP4 MLA KV cache. The committed machine profile uses
-a 256K context ceiling and 0.74 memory utilization on both ranks, leaving room for a
+a 256K context ceiling and 0.72 memory utilization on both ranks, leaving room for a
 16 GiB Harness on `thinkstationpgx-fd9c`. Run these on the head node:
 
 ```bash
@@ -157,6 +157,18 @@ from later NCCL and model-loading failures.
 DSpark uses the profile's port 8888 independently of the single-node
 `VLLM_PORT=8000` in `.env.local`. Use `DSPARK_VLLM_PORT` for an intentional cluster
 override; readiness, status, and smoke checks follow the resolved DSpark port.
+The launcher also requires `API_KEY` in `.env.local`, injects it as vLLM's
+`VLLM_API_KEY` through an untracked generated Compose file, and authenticates its
+own readiness and smoke requests. The key is never committed or printed.
+
+Once DSpark is running on the default port, query it with:
+
+```bash
+API_KEY=$(sed -n 's/^API_KEY=//p' .env.local)
+curl -fsS http://127.0.0.1:8888/v1/models \
+  -H "Authorization: Bearer ${API_KEY}" \
+  | python3 -m json.tool
+```
 
 ### Call it
 

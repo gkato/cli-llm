@@ -17,6 +17,8 @@ UPSTREAM_REPO="${DSPARK_UPSTREAM_REPO:-https://github.com/tonyd2wild/DeepSeek-v4
 RECIPE_DIR="${DSPARK_RECIPE_DIR:-${PROJECT_ROOT}/data/dspark/deepseek-v4-flash-0731}"
 ENV_FILE="${DSPARK_ENV_FILE:-${RECIPE_DIR}/.env.dspark}"
 CONFIG_FILE="${DSPARK_CONFIG_FILE:-${PROJECT_ROOT}/config/dspark-spark4e89-thinkstationpgx.env}"
+PROJECT_ENV_FILE="${DSPARK_PROJECT_ENV_FILE:-${PROJECT_ROOT}/.env.local}"
+AUTH_COMPOSE_FILE="${DSPARK_AUTH_COMPOSE_FILE:-${RECIPE_DIR}/docker-compose.dspark.auth.yml}"
 
 # Defaults for this installation. Override any of these in the command environment.
 WORKER_HOST_DEFAULT="totalpass@192.168.177.11"
@@ -73,6 +75,7 @@ Actions:
 Configuration environment variables:
   Common overrides:
     DSPARK_CONFIG_FILE       Machine profile (default: config/dspark-spark4e89-thinkstationpgx.env)
+    DSPARK_PROJECT_ENV_FILE  API_KEY source (default: project .env.local)
     WORKER_HOST              SSH target (profile: totalpass@192.168.177.11)
     WORKER_SCRIPT_DIR        Dedicated deployment path on the worker
     HF_CACHE                 Head Hugging Face cache
@@ -84,7 +87,7 @@ Configuration environment variables:
     MAX_MODEL_LEN            Profile default 262144 (256K)
     MAX_NUM_SEQS             Profile default 4
     MAX_NUM_BATCHED_TOKENS   Profile default 4096
-    GPU_MEMORY_UTILIZATION   Profile default 0.74 on both TP ranks
+    GPU_MEMORY_UTILIZATION   Profile default 0.72 on both TP ranks
     MTP_NUM_TOKENS           Default and recommended value: 5
     WORKER_AVAILABLE_TARGET_GIB  Required MemAvailable after model start (24)
     DSPARK_USE_BUILTIN_DOCKERFILE_FRONTEND  Avoid docker/dockerfile:1 pull (default: 1)
@@ -95,6 +98,7 @@ Notes:
   - Cluster addresses, interfaces, paths, and memory limits are committed in
     config/dspark-spark4e89-thinkstationpgx.env.
   - Process-environment values override the committed profile for one command.
+  - API authentication is required and sourced from API_KEY in .env.local.
   - `setup` never replaces an existing .env.dspark; it updates known keys in place.
   - Build and download are large/slow operations and run only when explicitly requested.
   - NVIDIA has a generic DeepSeek V4 Flash NIM, but the current ml.cli NIM
@@ -153,6 +157,43 @@ set_env_value() {
   mv "${tmp}" "${ENV_FILE}"
 }
 
+project_env_value() {
+  local key="$1"
+  [[ -f "${PROJECT_ENV_FILE}" ]] || return 0
+  sed -n "s/^${key}=//p" "${PROJECT_ENV_FILE}" | tail -n 1
+}
+
+configure_api_auth() {
+  local api_key base_compose tmp
+  api_key="${API_KEY:-$(project_env_value API_KEY)}"
+  [[ -n "${api_key}" ]] || die "API_KEY is missing from ${PROJECT_ENV_FILE}"
+  [[ "${api_key}" =~ ^[A-Za-z0-9._~-]+$ ]] \
+    || die "API_KEY may contain only letters, digits, dot, underscore, tilde, and hyphen"
+
+  set_env_value VLLM_API_KEY "${api_key}"
+  chmod 600 "${ENV_FILE}"
+
+  base_compose="${RECIPE_DIR}/docker-compose.dspark.yml"
+  [[ -f "${base_compose}" ]] || die "Missing upstream Compose file: ${base_compose}"
+  tmp="$(mktemp "${AUTH_COMPOSE_FILE}.XXXXXX")"
+  if ! awk '
+    !added && /^    environment:[[:space:]]*$/ {
+      print
+      print "      VLLM_API_KEY: \"${VLLM_API_KEY:?VLLM_API_KEY must be set}\""
+      added = 1
+      next
+    }
+    { print }
+    END { if (!added) exit 42 }
+  ' "${base_compose}" >"${tmp}"; then
+    rm -f "${tmp}"
+    die "Could not add VLLM_API_KEY to the generated Compose file"
+  fi
+  chmod 644 "${tmp}"
+  mv "${tmp}" "${AUTH_COMPOSE_FILE}"
+  log "vLLM API authentication enabled from ${PROJECT_ENV_FILE} (key not displayed)"
+}
+
 worker_host() {
   if [[ -n "${WORKER_HOST:-}" ]]; then
     printf '%s' "${WORKER_HOST}"
@@ -209,13 +250,15 @@ configure() {
   set_env_value MAX_MODEL_LEN "$(profile_value MAX_MODEL_LEN 262144)"
   set_env_value MAX_NUM_SEQS "$(profile_value MAX_NUM_SEQS 4)"
   set_env_value MAX_NUM_BATCHED_TOKENS "$(profile_value MAX_NUM_BATCHED_TOKENS 4096)"
-  set_env_value GPU_MEMORY_UTILIZATION "$(profile_value GPU_MEMORY_UTILIZATION 0.74)"
+  set_env_value GPU_MEMORY_UTILIZATION "$(profile_value GPU_MEMORY_UTILIZATION 0.72)"
   set_env_value MTP_NUM_TOKENS "$(profile_value MTP_NUM_TOKENS 5)"
   set_env_value KV_CACHE_DTYPE "$(profile_value KV_CACHE_DTYPE nvfp4_ds_mla)"
   set_env_value VLLM_USE_B12X_MOE 1
   set_env_value VLLM_USE_B12X_WO_PROJECTION 1
   set_env_value VLLM_DSPARK_GPU_REJECTED_CONTEXT_MASK 1
   set_env_value VLLM_USE_FLASHINFER_SAMPLER 1
+
+  configure_api_auth
 
   for key in WORKER_HOST WORKER_SCRIPT_DIR HF_CACHE WORKER_HF_CACHE \
              MASTER_ADDR VLLM_HOST_IP WORKER_VLLM_HOST_IP NCCL_IB_HCA \
@@ -246,7 +289,7 @@ configure() {
   fi
 
   log "Configured ${ENV_FILE}"
-  log "Profile: official 0731, 256K context, NVFP4 KV, 0.74 memory, MTP=5, TP=2"
+  log "Profile: official 0731, 256K context, NVFP4 KV, 0.72 memory, MTP=5, TP=2"
 }
 
 show_network() {
@@ -441,7 +484,7 @@ check_config() {
   require_env_file
   for key in WORKER_HOST WORKER_SCRIPT_DIR MASTER_ADDR VLLM_HOST_IP \
              WORKER_VLLM_HOST_IP NCCL_IB_HCA NCCL_SOCKET_IFNAME HF_CACHE \
-             WORKER_HF_CACHE DSPARK_MODEL KV_CACHE_DTYPE; do
+             WORKER_HF_CACHE DSPARK_MODEL KV_CACHE_DTYPE VLLM_API_KEY; do
     validate_value "${key}"
   done
 
@@ -453,8 +496,8 @@ check_config() {
     || warn "MTP_NUM_TOKENS differs from the current verified value 5"
   [[ "$(env_value MAX_MODEL_LEN)" == "262144" ]] \
     || warn "MAX_MODEL_LEN differs from the 256K coexistence profile"
-  [[ "$(env_value GPU_MEMORY_UTILIZATION)" == "0.74" ]] \
-    || warn "GPU_MEMORY_UTILIZATION differs from the Harness coexistence profile (0.74)"
+  [[ "$(env_value GPU_MEMORY_UTILIZATION)" == "0.72" ]] \
+    || warn "GPU_MEMORY_UTILIZATION differs from the Harness coexistence profile (0.72)"
 
   local failed=0
   check_local || failed=1
@@ -501,6 +544,7 @@ show_memory() {
 }
 
 start_cluster() {
+  configure_api_auth
   check_config
   ensure_gpus_free
   check_gpu_containers
@@ -611,10 +655,24 @@ run_upstream() {
 }
 
 run_upstream_with_api() (
-  local port
+  local port api_key curl_home
   require_env_file
   port="$(env_value VLLM_PORT)"
   port="${port:-8888}"
+  api_key="$(env_value VLLM_API_KEY)"
+  [[ -n "${api_key}" ]] || die "VLLM_API_KEY is missing from ${ENV_FILE}; run dspark configure"
+  [[ -f "${AUTH_COMPOSE_FILE}" ]] || die "Missing authenticated Compose file; run dspark configure"
+
+  # Upstream readiness and smoke scripts call curl directly. Give those calls
+  # an isolated curl config so the Bearer token is never placed in their
+  # command lines or printed in rendered configuration.
+  curl_home="$(mktemp -d /tmp/ml-compute-dspark-curl.XXXXXX)"
+  chmod 700 "${curl_home}"
+  umask 077
+  printf 'header = "Authorization: Bearer %s"\n' "${api_key}" >"${curl_home}/.curlrc"
+  trap 'rm -rf "${curl_home}"' EXIT
+  export CURL_HOME="${curl_home}"
+  export COMPOSE_FILE="${AUTH_COMPOSE_FILE}"
   export API_URL="${API_URL:-http://127.0.0.1:${port}/v1/models}"
   export CHAT_URL="${CHAT_URL:-http://127.0.0.1:${port}/v1/chat/completions}"
   run_upstream "$@"
@@ -664,8 +722,8 @@ case "${action}" in
   gpu-check) check_gpu_containers ;;
   memory) show_memory ;;
   smoke) run_upstream_with_api smoke-deepseek-v4-flash-dspark.sh ;;
-  logs) run_upstream logs-deepseek-v4-flash-dspark.sh ;;
-  stop) run_upstream stop-deepseek-v4-flash-dspark.sh ;;
+  logs) run_upstream_with_api logs-deepseek-v4-flash-dspark.sh ;;
+  stop) run_upstream_with_api stop-deepseek-v4-flash-dspark.sh ;;
   update)
     require_checkout
     log "Fast-forwarding upstream recipe"

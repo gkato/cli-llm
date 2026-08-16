@@ -729,13 +729,13 @@ models:
     external_recipe: scripts/DS4-Flash-DSpark.sh
     nodes: 2
     tensor_parallel_size: 2
-    # Coexistence profile: ~90 GiB per rank, leaving room for a 16 GiB Harness
+    # Coexistence profile: ~86 GiB per rank, leaving room for a 16 GiB Harness
     # plus operating headroom on the Lenovo worker.
-    vram_gb: 190
+    vram_gb: 174
     max_model_len: 262144
     max_num_seqs: 4
     max_num_batched_tokens: 4096
-    gpu_memory_utilization: 0.74
+    gpu_memory_utilization: 0.72
     kv_cache_dtype: nvfp4_ds_mla
     speculative_method: dspark
     speculative_tokens: 5
