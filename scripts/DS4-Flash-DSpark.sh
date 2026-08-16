@@ -531,36 +531,31 @@ run_upstream() {
 }
 
 run_upstream_build() (
-  local build_script backup_file patched_file frontend_mode
-  build_script="${RECIPE_DIR}/build-dspark-vllm-runtime.sh"
+  local dockerfile backup_file patched_file frontend_mode
+  dockerfile="${RECIPE_DIR}/recipe/Dockerfile.dspark-runtime-overlay"
   frontend_mode="$(profile_value DSPARK_USE_BUILTIN_DOCKERFILE_FRONTEND 1)"
 
-  if [[ "${frontend_mode}" != 1 ]] || grep -q 'BUILDKIT_SYNTAX=dockerfile.v0' "${build_script}"; then
+  if [[ "${frontend_mode}" != 1 ]] || ! head -n 1 "${dockerfile}" | grep -q '^# syntax=docker/dockerfile:1'; then
     run_upstream build-dspark-vllm-runtime.sh
     return
   fi
 
   # The upstream overlay Dockerfile declares docker/dockerfile:1, causing an
-  # extra Docker Hub pull. Docker's BUILDKIT_SYNTAX built-in argument overrides
-  # that directive. Patch the launcher only for this invocation; the EXIT trap
-  # restores the pristine upstream file even when a build is interrupted.
-  backup_file="$(mktemp /tmp/ml-compute-dspark-build.XXXXXX)"
-  patched_file="$(mktemp /tmp/ml-compute-dspark-build-patched.XXXXXX)"
-  cp -p "${build_script}" "${backup_file}"
-  trap 'mv "${backup_file}" "${build_script}"; if [[ -e "${patched_file}" ]]; then rm -f "${patched_file}"; fi' EXIT
+  # extra Docker Hub pull. Omitting the directive makes BuildKit use its bundled
+  # Dockerfile frontend. Patch only for this invocation; the EXIT trap restores
+  # the pristine upstream file even when a build is interrupted. The temporary
+  # file is also what the upstream rsync sends to the worker, so both nodes use
+  # the same frontend without permanently dirtying the head checkout.
+  backup_file="$(mktemp /tmp/ml-compute-dspark-dockerfile.XXXXXX)"
+  patched_file="$(mktemp /tmp/ml-compute-dspark-dockerfile-patched.XXXXXX)"
+  cp -p "${dockerfile}" "${backup_file}"
+  trap 'mv "${backup_file}" "${dockerfile}"; if [[ -e "${patched_file}" ]]; then rm -f "${patched_file}"; fi' EXIT
 
-  awk '
-    /^[[:space:]]*docker build \\$/ {
-      print
-      print "      --build-arg BUILDKIT_SYNTAX=dockerfile.v0 \\"
-      next
-    }
-    { print }
-  ' "${build_script}" >"${patched_file}"
-  chmod +x "${patched_file}"
-  mv "${patched_file}" "${build_script}"
+  tail -n +2 "${dockerfile}" >"${patched_file}"
+  chmod 644 "${patched_file}"
+  mv "${patched_file}" "${dockerfile}"
 
-  log "Building with Docker's bundled Dockerfile frontend (dockerfile.v0)"
+  log "Building with Docker's bundled Dockerfile frontend (external syntax directive disabled temporarily)"
   run_upstream build-dspark-vllm-runtime.sh
 )
 
