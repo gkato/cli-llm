@@ -6,6 +6,10 @@
 # It deliberately does not reimplement the patched vLLM image or its worker-first
 # launcher. Run every command on the head node.
 
+if [ -z "${BASH_VERSION:-}" ]; then
+  exec bash "$0" "$@"
+fi
+
 set -Eeuo pipefail
 
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -81,6 +85,7 @@ Configuration environment variables:
     GPU_MEMORY_UTILIZATION   Profile default 0.74 on both TP ranks
     MTP_NUM_TOKENS           Default and recommended value: 5
     WORKER_AVAILABLE_TARGET_GIB  Required MemAvailable after model start (24)
+    DSPARK_USE_BUILTIN_DOCKERFILE_FRONTEND  Avoid docker/dockerfile:1 pull (default: 1)
     NCCL_IB_GID_INDEX        RoCE v2/IPv4 GID index (profile: 3)
     ALLOW_ACTIVE_VLLM=1      Bypass the competing-workload launch guard
 
@@ -297,6 +302,13 @@ check_local() {
     warn "local Docker Compose is unavailable"
     failed=1
   fi
+  if docker info >/dev/null 2>&1; then
+    log "local Docker daemon access OK"
+  else
+    warn "local Docker daemon is not accessible by user $(id -un)"
+    warn "run: sudo usermod -aG docker $(id -un), then log out/in or run: newgrp docker"
+    failed=1
+  fi
 
   if nvidia-smi --query-gpu=name,driver_version --format=csv,noheader 2>/dev/null | grep -q 'GB10'; then
     log "local GB10 GPU detected"
@@ -363,10 +375,11 @@ check_remote() {
   fi
   log "passwordless SSH OK: ${wh}"
 
-  if ssh "${wh}" 'docker compose version >/dev/null && nvidia-smi --query-gpu=name --format=csv,noheader | grep -q GB10'; then
-    log "worker Docker Compose and GB10 GPU detected"
+  if ssh "${wh}" 'docker compose version >/dev/null && docker info >/dev/null 2>&1 && nvidia-smi --query-gpu=name --format=csv,noheader | grep -q GB10'; then
+    log "worker Docker daemon, Compose, and GB10 GPU detected"
   else
-    warn "worker Docker Compose/GB10 check failed"
+    warn "worker Docker daemon/Compose/GB10 check failed"
+    warn "verify on the worker: id -nG; docker info"
     failed=1
   fi
   IFS=',' read -r -a hcas <<<"${hca}"
@@ -517,6 +530,40 @@ run_upstream() {
   (cd "${RECIPE_DIR}" && "./${script}" "$@")
 }
 
+run_upstream_build() (
+  local build_script backup_file patched_file frontend_mode
+  build_script="${RECIPE_DIR}/build-dspark-vllm-runtime.sh"
+  frontend_mode="$(profile_value DSPARK_USE_BUILTIN_DOCKERFILE_FRONTEND 1)"
+
+  if [[ "${frontend_mode}" != 1 ]] || grep -q 'BUILDKIT_SYNTAX=dockerfile.v0' "${build_script}"; then
+    run_upstream build-dspark-vllm-runtime.sh
+    return
+  fi
+
+  # The upstream overlay Dockerfile declares docker/dockerfile:1, causing an
+  # extra Docker Hub pull. Docker's BUILDKIT_SYNTAX built-in argument overrides
+  # that directive. Patch the launcher only for this invocation; the EXIT trap
+  # restores the pristine upstream file even when a build is interrupted.
+  backup_file="$(mktemp /tmp/ml-compute-dspark-build.XXXXXX)"
+  patched_file="$(mktemp /tmp/ml-compute-dspark-build-patched.XXXXXX)"
+  cp -p "${build_script}" "${backup_file}"
+  trap 'mv "${backup_file}" "${build_script}"; if [[ -e "${patched_file}" ]]; then rm -f "${patched_file}"; fi' EXIT
+
+  awk '
+    /^[[:space:]]*docker build \\$/ {
+      print
+      print "      --build-arg BUILDKIT_SYNTAX=dockerfile.v0 \\"
+      next
+    }
+    { print }
+  ' "${build_script}" >"${patched_file}"
+  chmod +x "${patched_file}"
+  mv "${patched_file}" "${build_script}"
+
+  log "Building with Docker's bundled Dockerfile frontend (dockerfile.v0)"
+  run_upstream build-dspark-vllm-runtime.sh
+)
+
 action="${1:-help}"
 case "${action}" in
   help|-h|--help) usage ;;
@@ -525,7 +572,7 @@ case "${action}" in
   configure) configure ;;
   check) check_config ;;
   setup) bootstrap; configure; check_config ;;
-  build) check_config; run_upstream build-dspark-vllm-runtime.sh ;;
+  build) check_config; run_upstream_build ;;
   download) check_config; run_upstream prepare-dspark-model-cache.sh ;;
   start) start_cluster ;;
   status) run_upstream status-deepseek-v4-flash-dspark.sh ;;
@@ -542,7 +589,7 @@ case "${action}" in
     bootstrap
     configure
     check_config
-    run_upstream build-dspark-vllm-runtime.sh
+    run_upstream_build
     run_upstream prepare-dspark-model-cache.sh
     start_cluster
     ;;

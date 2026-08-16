@@ -2,6 +2,10 @@
 # Start the configured two-node DeepSeek V4 Flash service from the NVIDIA/head
 # Spark. Pass --first-run to bootstrap, build, download, and then start.
 
+if [ -z "${BASH_VERSION:-}" ]; then
+  exec bash "$0" "$@"
+fi
+
 set -Eeuo pipefail
 
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
