@@ -548,8 +548,8 @@ def nim_logs(follow: bool, lines: int):
 
 DSPARK_ACTIONS = [
     "network", "bootstrap", "configure", "check", "setup", "build",
-    "download", "start", "status", "memory", "smoke", "logs", "stop", "update",
-    "all", "path", "help",
+    "download", "start", "status", "gpu-check", "memory", "smoke", "logs",
+    "stop", "update", "all", "path", "help",
 ]
 
 
@@ -574,6 +574,7 @@ def dspark_cmd(action: str):
       ml.cli dspark setup
       ml.cli dspark build
       ml.cli dspark download
+      ml.cli dspark gpu-check
       ml.cli dspark start
       ml.cli dspark smoke
 

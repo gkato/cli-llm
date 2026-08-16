@@ -46,6 +46,7 @@ Run on the NVIDIA/head Spark:
 
   # 4. Operate and validate the endpoint.
   python3 -m ml.cli dspark status
+  python3 -m ml.cli dspark gpu-check
   python3 -m ml.cli dspark smoke
   python3 -m ml.cli dspark logs
   python3 -m ml.cli dspark stop
@@ -60,6 +61,7 @@ Actions:
   download   Download and verify weights, then mirror them to the worker
   start      Refuse competing GPU workloads, then launch worker-first
   status     Show head and worker container state
+  gpu-check  Prove PyTorch can initialize GB10 inside the runtime on both nodes
   memory     Show head/worker MemAvailable and verify the Harness budget
   smoke      Run the upstream OpenAI API smoke test
   logs       Follow the distributed server logs
@@ -491,10 +493,78 @@ show_memory() {
 start_cluster() {
   check_config
   ensure_gpus_free
+  check_gpu_containers
   run_upstream start-deepseek-v4-flash-dspark.sh
   if ! show_memory; then
     warn "The model is running, but the Harness memory target was not met"
   fi
+}
+
+gpu_probe_python() {
+  cat <<'PY'
+import torch
+
+if not torch.cuda.is_available():
+    raise RuntimeError("torch.cuda.is_available() is false")
+if torch.cuda.device_count() != 1:
+    raise RuntimeError(f"expected one GB10, found {torch.cuda.device_count()}")
+print(f"CUDA OK: {torch.cuda.get_device_name(0)}; torch={torch.__version__}; cuda={torch.version.cuda}")
+PY
+}
+
+gpu_probe_argv() {
+  local image="$1" python_code
+  python_code="$(gpu_probe_python)"
+  GPU_PROBE_ARGV=(
+    docker run --rm --gpus all
+    --entrypoint bash "${image}" -lc
+    "export PATH=\"/opt/env/bin:/opt/env/nvvm/bin:/opt/env/targets/sbsa-linux/nvvm/bin:\${PATH:-}\"; export LD_LIBRARY_PATH=\"/opt/env/lib:/opt/env/targets/sbsa-linux/lib:\${LD_LIBRARY_PATH:-}\"; exec /opt/env/bin/python -c $(printf '%q' "${python_code}")"
+  )
+}
+
+print_cdi_repair() {
+  local node="$1"
+  warn "CUDA could not initialize in the runtime container on ${node}."
+  warn "On ${node}, refresh NVIDIA's device specification, then rerun gpu-check:"
+  warn "  sudo systemctl restart nvidia-cdi-refresh.service"
+  warn "  nvidia-ctk --debug cdi list"
+  warn "If that service does not exist, generate the spec manually:"
+  warn "  sudo mkdir -p /var/run/cdi"
+  warn "  sudo nvidia-ctk cdi generate --output=/var/run/cdi/nvidia.yaml"
+}
+
+check_gpu_containers() {
+  require_env_file
+  local image wh failed=0 remote_command
+  local -a probe
+  image="$(env_value DSPARK_VLLM_IMAGE)"
+  image="${image:-vllm-dspark-runtime:dspark-nvfp4-stage-c}"
+  wh="$(worker_host)"
+  gpu_probe_argv "${image}"
+  probe=("${GPU_PROBE_ARGV[@]}")
+
+  if ! docker image inspect "${image}" >/dev/null 2>&1; then
+    warn "Runtime image is absent on head: ${image}"
+    failed=1
+  elif "${probe[@]}"; then
+    log "head GPU-container initialization passed"
+  else
+    print_cdi_repair "head ($(hostname))"
+    failed=1
+  fi
+
+  printf -v remote_command '%q ' "${probe[@]}"
+  if ! ssh "${wh}" "docker image inspect $(printf '%q' "${image}") >/dev/null 2>&1"; then
+    warn "Runtime image is absent on worker ${wh}: ${image}"
+    failed=1
+  elif ssh "${wh}" "${remote_command}"; then
+    log "worker GPU-container initialization passed: ${wh}"
+  else
+    print_cdi_repair "worker (${wh})"
+    failed=1
+  fi
+
+  [[ "${failed}" == 0 ]] || die "GPU-container preflight failed; do not debug NCCL or model loading until both probes pass"
 }
 
 competing_workload() {
@@ -571,6 +641,7 @@ case "${action}" in
   download) check_config; run_upstream prepare-dspark-model-cache.sh ;;
   start) start_cluster ;;
   status) run_upstream status-deepseek-v4-flash-dspark.sh ;;
+  gpu-check) check_gpu_containers ;;
   memory) show_memory ;;
   smoke) run_upstream smoke-deepseek-v4-flash-dspark.sh ;;
   logs) run_upstream logs-deepseek-v4-flash-dspark.sh ;;

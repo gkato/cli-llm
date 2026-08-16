@@ -130,6 +130,7 @@ python3 -m ml.cli dspark network     # QSFP/RoCE state and setup guidance
 python3 -m ml.cli dspark setup       # clone, configure, and check both nodes
 python3 -m ml.cli dspark build       # build and sync the patched image
 python3 -m ml.cli dspark download    # download/verify and mirror weights
+python3 -m ml.cli dspark gpu-check   # initialize CUDA in the image on both nodes
 scripts/start-DS4-Flash-DSpark.sh    # worker-first launch on port 8888
 python3 -m ml.cli dspark smoke
 ```
@@ -146,6 +147,12 @@ The lifecycle implementation is in [`scripts/DS4-Flash-DSpark.sh`](scripts/DS4-F
 After launch, `python3 -m ml.cli dspark memory` verifies that the worker has at least
 24 GiB `MemAvailable` before the Harness starts. The generated upstream checkout and
 its `.env.dspark` live under ignored `data/dspark/` by default.
+
+The launcher runs `gpu-check` automatically before it starts either TP rank. If a
+driver update left Docker's NVIDIA CDI description stale, refresh it on the node
+named by the error with `sudo systemctl restart nvidia-cdi-refresh.service`, then
+rerun `python3 -m ml.cli dspark gpu-check`. This isolates container/driver failures
+from later NCCL and model-loading failures.
 
 ### Call it
 
