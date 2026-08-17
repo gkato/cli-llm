@@ -1,4 +1,3 @@
-import json
 import os
 import shlex
 import signal
@@ -11,117 +10,38 @@ import requests
 from ml.config import DATA, HF_CACHE, LOGS, VLLM_HOST, VLLM_PORT, get_api_key, get_models
 from ml.models import resolve_hf_id
 from ml.state import clear_state, is_pid_alive, read_state, running_state, write_state
+from ml.vllm_args import build_vllm_serve_args
 
 VLLM_LOG = LOGS / "vllm.log"
-
-
-def _normalize_rope_scaling(value) -> str | None:
-    """Accept either a JSON string or a dict in the registry; emit a JSON string for vLLM."""
-    if value is None:
-        return None
-    if isinstance(value, str):
-        # Validate it parses, then re-serialize compactly
-        return json.dumps(json.loads(value))
-    if isinstance(value, dict):
-        return json.dumps(value)
-    raise ValueError(f"rope_scaling must be a JSON string or dict, got {type(value).__name__}")
-
-
-def _normalize_json_option(name: str, value) -> str | None:
-    """Accept a JSON string or YAML mapping and emit compact JSON for vLLM."""
-    if value is None:
-        return None
-    if isinstance(value, str):
-        value = json.loads(value)
-    if isinstance(value, dict):
-        return json.dumps(value, separators=(",", ":"))
-    raise ValueError(f"{name} must be a JSON string or dict, got {type(value).__name__}")
 
 
 def _build_cmd(model_alias: str, hf_id: str, port: int) -> list[str]:
     cfg = get_models().get(model_alias, {})
     backend = cfg.get("serve_backend", "vllm")
     if backend != "vllm":
+        if backend == "docker":
+            raise RuntimeError(
+                f"{model_alias!r} uses the Docker vLLM backend. Run "
+                f"`python3 -m ml.cli docker serve {model_alias}`."
+            )
         recipe = cfg.get("external_recipe", f"scripts/{backend}.sh")
         raise RuntimeError(
             f"{model_alias!r} uses the {backend!r} backend, not local vLLM. "
             f"Run `python3 -m ml.cli {backend} setup`, then "
             f"`python3 -m ml.cli {backend} start` (recipe: {recipe})."
         )
-    cmd = [
-        "vllm", "serve", hf_id,
-        "--host", VLLM_HOST,
-        "--port", str(port),
-        "--download-dir", str(HF_CACHE / "hub"),
+    return [
+        "vllm",
+        "serve",
+        *build_vllm_serve_args(
+            hf_id,
+            cfg,
+            host=VLLM_HOST,
+            port=port,
+            download_dir=HF_CACHE / "hub",
+            api_key=get_api_key(),
+        ),
     ]
-
-    if (max_len := cfg.get("max_model_len")):
-        cmd += ["--max-model-len", str(max_len)]
-    if (dtype := cfg.get("dtype")) and dtype != "auto":
-        cmd += ["--dtype", str(dtype)]
-    if (quant := cfg.get("quantization")):
-        cmd += ["--quantization", str(quant)]
-    if (gpu_mem := cfg.get("gpu_memory_utilization")):
-        cmd += ["--gpu-memory-utilization", str(gpu_mem)]
-    if (max_seqs := cfg.get("max_num_seqs")):
-        cmd += ["--max-num-seqs", str(max_seqs)]
-    if (max_batched_tokens := cfg.get("max_num_batched_tokens")):
-        cmd += ["--max-num-batched-tokens", str(max_batched_tokens)]
-
-    if cfg.get("enable_prefix_caching"):
-        cmd += ["--enable-prefix-caching"]
-    if cfg.get("enable_chunked_prefill"):
-        cmd += ["--enable-chunked-prefill"]
-
-    if (speculative := _normalize_json_option(
-        "speculative_config", cfg.get("speculative_config")
-    )):
-        cmd += ["--speculative-config", speculative]
-
-    # YaRN / context extension. The registry value can be a YAML mapping
-    # or an inline JSON string; vLLM expects a JSON string on the CLI.
-    if (rope := _normalize_rope_scaling(cfg.get("rope_scaling"))):
-        cmd += ["--rope-scaling", rope]
-
-    # Reasoning parser: routes <think>…</think> into a separate
-    # `reasoning_content` field so `content` is the clean final answer.
-    # Common values: "qwen3", "deepseek_r1". Set to "qwen3" for Qwen3-*.
-    # Different vLLM versions vary on whether --enable-reasoning is required
-    # alongside --reasoning-parser; recent versions auto-enable when the
-    # parser is set, and older 0.8.x reject --enable-reasoning as unknown.
-    # Setting just --reasoning-parser works on both.
-    if (parser := cfg.get("reasoning_parser")):
-        cmd += ["--reasoning-parser", str(parser)]
-
-    if (parser := cfg.get("tool_call_parser")):
-        cmd += ["--tool-call-parser", str(parser)]
-    if cfg.get("enable_auto_tool_choice"):
-        cmd += ["--enable-auto-tool-choice"]
-    if cfg.get("language_model_only"):
-        cmd += ["--language-model-only"]
-
-    # LoRA adapters: a list of {name, path, [rank]} entries. vLLM applies the
-    # adapter on top of the base at runtime; clients request the LoRA by its
-    # `name` as the OpenAI `model` field.
-    loras = cfg.get("loras") or []
-    if loras:
-        cmd += ["--enable-lora"]
-        max_rank = max((int(l.get("rank", 16)) for l in loras), default=16)
-        cmd += ["--max-lora-rank", str(max_rank)]
-        cmd += ["--max-loras", str(len(loras))]
-        # vLLM expects `--lora-modules name=path [name=path ...]`
-        lora_specs = [f"{l['name']}={l['path']}" for l in loras]
-        cmd += ["--lora-modules", *lora_specs]
-
-    # Extra raw flags for any uncommon vLLM option (list of strings).
-    for extra in (cfg.get("extra_args") or []):
-        cmd.append(str(extra))
-
-    api_key = get_api_key()
-    if api_key:
-        cmd += ["--api-key", api_key]
-
-    return cmd
 
 
 def start(model_alias: str, foreground: bool = False, port: int | None = None) -> dict:

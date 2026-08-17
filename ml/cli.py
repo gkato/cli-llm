@@ -32,6 +32,13 @@ COMMON WORKFLOWS
     ml.cli stop                           # shut down (shared)
 
 \b
+  Dedicated vLLM image serving (Docker):
+    ml.cli docker serve unlimited-ocr     # start registry image
+    ml.cli docker status                  # check readiness
+    ml.cli docker logs -f                 # follow container logs
+    ml.cli docker stop                    # stop + remove container
+
+\b
   NVIDIA NIM container serving (preferred on GB10):
     ml.cli nim models                     # list NIM catalog
     ml.cli nim serve qwen3.5-27b-nim      # start NIM container
@@ -53,14 +60,15 @@ COMMON WORKFLOWS
 ONE SERVER AT A TIME
 
 \b
-  vLLM and NIM both bind port 8000 by default. Stop one before starting
-  the other:  `ml.cli stop` (vLLM)  or  `ml.cli nim stop` (NIM).
+  Local vLLM, Docker vLLM, and NIM bind port 8000 by default. Stop the
+  active backend before starting another: `ml.cli stop`, `ml.cli docker
+  stop`, or `ml.cli nim stop`.
 
 \b
 DOCS
 
 \b
-  Registry of models:    registry/models.yaml      (vLLM and DSpark)
+  Registry of models:    registry/models.yaml      (vLLM, Docker, DSpark)
   NIM catalog:           registry/nim_catalog.yaml (Docker-served)
   README:                README.md
 """
@@ -71,9 +79,10 @@ def cli():
     """ml-compute — OpenAI-compatible local and two-node inference.
 
     \b
-    Four serving backends behind a single CLI:
+    Five serving backends behind a single CLI:
       • vLLM      pip-installed Python process, safetensors →  `ml.cli serve <alias>`
       • llama.cpp local llama-server process, GGUF          →  `ml.cli serve llama <id>`
+      • Docker    dedicated vLLM image from model registry  →  `ml.cli docker serve <alias>`
       • NIM       NVIDIA TensorRT-LLM container, Docker      →  `ml.cli nim serve <alias>`
       • DSpark    patched Docker vLLM, two GB10 nodes, TP=2  →  `ml.cli dspark <action>`
 
@@ -329,6 +338,126 @@ def status_cmd():
 def logs_cmd(follow: bool, lines: int):
     """Tail the running server's log (vLLM or llama.cpp)."""
     _serving_module().tail_logs(lines=lines, follow=follow)
+
+
+# ---------------------------------------------------------------------------
+# Docker vLLM — dedicated per-model images from registry/models.yaml
+# ---------------------------------------------------------------------------
+
+DOCKER_EPILOG = """
+\b
+QUICKSTART
+
+\b
+  Start a Docker-backed registry model and watch it load:
+    ml.cli docker serve unlimited-ocr
+    ml.cli docker logs -f
+
+\b
+  Check API readiness, then stop and remove the container:
+    ml.cli docker status
+    ml.cli docker stop
+
+\b
+REGISTRY
+
+\b
+  Entries live in registry/models.yaml and must set:
+    serve_backend: docker
+    docker_image: org/image:tag
+
+  Standard vLLM fields and extra_args are passed to the image's
+  `vllm serve` entrypoint. The Hugging Face cache is mounted from HF_HOME.
+"""
+
+
+@cli.group("docker", epilog=DOCKER_EPILOG)
+def docker_group():
+    """Manage dedicated vLLM Docker images from the model registry."""
+
+
+@docker_group.command("serve")
+@click.argument("name")
+@click.option("--port", type=int, default=None,
+              help=f"Override port (default {VLLM_PORT})")
+@click.option("--foreground", is_flag=True,
+              help="Run attached with logs in the terminal")
+@click.option("--gpus", type=click.IntRange(min=1), default=None,
+              help="Number of GPUs to bind (default: all)")
+def docker_serve(name: str, port: int | None, foreground: bool, gpus: int | None):
+    """Start a Docker-backed vLLM model by registry alias.
+
+    \b
+    NAME must reference an entry in registry/models.yaml with
+    `serve_backend: docker` and a `docker_image`.
+    """
+    from ml.docker_server import start
+
+    try:
+        info = start(name, port=port, foreground=foreground, gpu_count=gpus)
+    except (RuntimeError, ValueError) as exc:
+        raise click.ClickException(str(exc)) from exc
+    click.echo(f"✓ Started Docker vLLM container ({info['container_name']})")
+    click.echo(f"  Image:     {info['image']}")
+    click.echo(f"  Model:     {info['served_model_name']}")
+    click.echo(f"  Port:      {info['port']}")
+    click.echo(f"  Container: {info['container_id'][:12]}")
+    click.echo("  Logs:      python3 -m ml.cli docker logs -f")
+    click.echo("  Status:    python3 -m ml.cli docker status")
+
+
+@docker_group.command("status")
+def docker_status():
+    """Show Docker container state and OpenAI API readiness."""
+    from ml.docker_server import status
+
+    s = status()
+    if not s["running"]:
+        if s.get("exited"):
+            click.echo(
+                f"State: EXITED ✗  (status={s.get('exit_status')}, "
+                f"exit_code={s.get('exit_code')})"
+            )
+            if s.get("exit_error"):
+                click.echo(f"  Error: {s['exit_error']}")
+            click.echo(f"  Alias: {s.get('alias')}")
+            click.echo(f"  Image: {s.get('image')}")
+            click.echo(f"  Hint:  {s.get('log_hint')}")
+        else:
+            click.echo("State: not running")
+        return
+
+    readiness = "ready ✓" if s["ready"] else "loading…"
+    container_id = s.get("container_id") or "unknown"
+    click.echo(f"State: {readiness}")
+    click.echo(f"  Container: {s['container_name']} ({container_id[:12]})")
+    click.echo(f"  Alias:     {s.get('alias')}")
+    click.echo(f"  Image:     {s.get('image')}")
+    click.echo(f"  Model:     {s.get('served_model_name')}")
+    click.echo(f"  URL:       http://localhost:{s['port']}/v1")
+    click.echo(f"  Started:   {s.get('started_at')}")
+    click.echo("  Logs:      python3 -m ml.cli docker logs -f")
+
+
+@docker_group.command("stop")
+def docker_stop():
+    """Stop and remove the managed Docker vLLM container."""
+    from ml.docker_server import stop
+
+    if stop():
+        click.echo("✓ Stopped and removed Docker vLLM container")
+    else:
+        click.echo("Nothing running")
+
+
+@docker_group.command("logs")
+@click.option("-f", "--follow", is_flag=True, help="Follow log output")
+@click.option("-n", "--lines", type=int, default=50, show_default=True)
+def docker_logs(follow: bool, lines: int):
+    """Show logs from the running or exited Docker vLLM container."""
+    from ml.docker_server import tail_logs
+
+    tail_logs(lines=lines, follow=follow)
 
 
 # ---------------------------------------------------------------------------
