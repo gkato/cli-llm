@@ -35,6 +35,36 @@ models:
     dtype: auto
     quantization: awq
 
+  # === OCR / Document Parsing ===
+  # Unlimited-OCR is a 3B BF16 vision-language model with a native 32k
+  # context. On DGX Spark, use the dedicated ARM64/CUDA 13 vLLM image: the
+  # model architecture and its R-SWA kernels ship there together. A 0.20
+  # utilization cap reserves ~26 GB of the 128 GB unified pool, leaving ample
+  # room for the OS while covering weights, the vision encoder, KV cache, and
+  # CUDA workspaces. Quantization is unnecessary at this size.
+  #
+  # The logits processor and cache flags are part of the model's required
+  # serving recipe. Requests must also start the text prompt with a literal
+  # `<image>`, set skip_special_tokens=false, and pass vllm_xargs with
+  # ngram_size=35 and window_size=128 (1024 for multi-page/PDF input).
+  unlimited-ocr:
+    hf_id: baidu/Unlimited-OCR
+    served_model_name: baidu/Unlimited-OCR
+    serve_backend: docker
+    docker_image: vllm/vllm-openai:unlimited-ocr-arm64-cu130
+    vram_gb: 26
+    max_model_len: 32768
+    max_num_seqs: 1
+    dtype: bfloat16
+    gpu_memory_utilization: 0.20
+    extra_args:
+      - --trust-remote-code
+      - --logits_processors
+      - vllm.model_executor.models.unlimited_ocr:NGramPerReqLogitsProcessor
+      - --no-enable-prefix-caching
+      - --mm-processor-cache-gb
+      - "0"
+
   # Qwen3-8B with YaRN context extension (40k native → 65k effective).
   # Mild quality degradation on long contexts, but covers the 5% of cases
   # that overflow 40k. Use this as the distillation base.
