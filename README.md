@@ -4,12 +4,13 @@ Local LLM inference and fine-tuning on your own hardware. Built for the **NVIDIA
 (GB10)** — Grace CPU + Blackwell GPU with 128 GB unified memory — and works on any local
 box with an NVIDIA GPU.
 
-One CLI, four serving backends, all speaking the same OpenAI-compatible `/v1` API:
+One CLI, five serving backends, all speaking the same OpenAI-compatible `/v1` API:
 
 | Backend | Runs | Weights | Command |
 |---------|------|---------|---------|
 | **vLLM** | pip-installed Python process | safetensors (bf16 / FP8 / NVFP4 / AWQ) | `serve <alias>` |
 | **llama.cpp** | local `llama-server` binary | GGUF | `serve llama <id>` |
+| **Docker vLLM** | dedicated per-model container | safetensors + custom vLLM build | `docker serve <alias>` |
 | **NIM** | Docker container (TensorRT-LLM) | NVIDIA-packaged | `nim serve <alias>` |
 | **DSpark cluster** | patched Docker/vLLM on two GB10 nodes | DeepSeek V4 Flash 0731 | `dspark <action>` |
 
@@ -107,6 +108,22 @@ python3 -m ml.cli serve llama /path/to/model.gguf                    # local fil
 
 Requires the `llama-server` binary on `PATH` (see [GB10 notes](#llamacpp-must-be-built-with-openssl)).
 
+### Docker vLLM (dedicated model images)
+
+Models that require a custom vLLM build set `serve_backend: docker` and
+`docker_image` in `registry/models.yaml`. The CLI mounts the shared Hugging Face
+cache, applies the normal vLLM registry settings, and manages one fixed container:
+
+```bash
+python3 -m ml.cli docker serve unlimited-ocr
+python3 -m ml.cli docker status
+python3 -m ml.cli docker logs -f
+python3 -m ml.cli docker stop
+```
+
+This path needs Docker with NVIDIA Container Toolkit GPU support. It does not need
+an NGC account; public images are pulled directly from their configured registry.
+
 ### NIM (Docker / TensorRT-LLM)
 
 ```bash
@@ -190,6 +207,7 @@ for llama.cpp, a LoRA `name` if the registry entry defines adapters.
 ```bash
 python3 -m ml.cli stop                        # works for vLLM or llama.cpp
 python3 -m ml.cli restart gemma4-12b-it       # stop + start a different vLLM model
+python3 -m ml.cli docker stop                 # dedicated vLLM image lifecycle
 python3 -m ml.cli nim stop                    # NIM has its own lifecycle
 python3 -m ml.cli dspark stop                 # stops both cluster nodes
 ```
@@ -197,7 +215,8 @@ python3 -m ml.cli dspark stop                 # stops both cluster nodes
 **One model workload at a time.** The local backends bind port 8000; DSpark defaults to
 8888 and uses a symmetric memory allocation on both nodes. The 256K coexistence profile
 reserves worker capacity for the separately capped Harness. vLLM and llama.cpp share one
-state file (`data/server.json`) and one `stop`; NIM and DSpark have separate lifecycles.
+state file (`data/server.json`) and one `stop`; Docker vLLM, NIM, and DSpark have separate
+lifecycles.
 Stop whatever's running before starting something else.
 
 ---
@@ -232,6 +251,7 @@ No code changes — register a model with provider `openai`, the base URL above,
 |-----------|-----|
 | Serving safetensors, need LoRA-at-runtime, long context, prefix caching | **vLLM** |
 | GGUF weights, huge quantized context, tight memory, or vLLM won't build | **llama.cpp** |
+| Model requires a dedicated/custom vLLM image | **Docker vLLM** |
 | Want NVIDIA-tuned TensorRT-LLM kernels and NVFP4 on Blackwell | **NIM** |
 | DeepSeek V4 Flash 0731 across two linked GB10 nodes | **DSpark cluster** |
 | Fine-tuning | none — stop the server, run `Makefile.gb10` |
@@ -245,11 +265,12 @@ cache reaches contexts vLLM can't afford.
 
 ## Model Registries
 
-Three YAML files, one per backend. Adding a model is a registry edit — no code changes.
+Three registry YAML files cover the serving backends. Adding a model is normally a
+registry edit — no code changes.
 
 | File | Backend | Key fields |
 |------|---------|-----------|
-| [registry/models.yaml](registry/models.yaml) | vLLM | `hf_id`, `max_model_len`, `quantization`, `gpu_memory_utilization`, `max_num_seqs`, `max_num_batched_tokens`, `enable_prefix_caching`, `enable_chunked_prefill`, `speculative_config`, `reasoning_parser`, `tool_call_parser`, `enable_auto_tool_choice`, `language_model_only`, `rope_scaling`, `loras`, `extra_args` |
+| [registry/models.yaml](registry/models.yaml) | vLLM / Docker vLLM | `hf_id`, `serve_backend`, `docker_image`, `docker_env`, `docker_args`, `max_model_len`, `quantization`, `gpu_memory_utilization`, `max_num_seqs`, `max_num_batched_tokens`, `enable_prefix_caching`, `enable_chunked_prefill`, `speculative_config`, `reasoning_parser`, `tool_call_parser`, `enable_auto_tool_choice`, `language_model_only`, `rope_scaling`, `loras`, `extra_args` |
 | [registry/llama_models.yaml](registry/llama_models.yaml) | llama.cpp | `hf_repo` or `gguf_path`, `n_gpu_layers`, `ctx_size`, `served_name`, `extra_args` |
 | [registry/nim_catalog.yaml](registry/nim_catalog.yaml) | NIM | `image`, `model_name`, `gpu_count`, `extra_env` |
 
@@ -593,6 +614,8 @@ ml-compute/
 ├── ml/
 │   ├── cli.py                  Click CLI — every command lives here
 │   ├── vllm_server.py          vLLM lifecycle + Blackwell env setup
+│   ├── docker_server.py        dedicated vLLM Docker-image lifecycle
+│   ├── vllm_args.py            shared registry → vLLM argument translation
 │   ├── llama_server.py         llama.cpp (GGUF) lifecycle
 │   ├── nim_server.py           NIM container lifecycle (Docker)
 │   ├── models.py               HF download / list / remove
@@ -623,7 +646,8 @@ ml-compute/
 │   ├── hf_cache/               HuggingFace weights
 │   ├── adapters/<name>/        Trained LoRA adapters
 │   ├── logs/{vllm,llama}.log   Server logs; training logs alongside
-│   └── server.json             Running server state (PID, port, model, backend)
+│   ├── server.json             Running server state (PID, port, model, backend)
+│   └── docker_state.json       Managed Docker vLLM container state
 ├── setup.sh                    Arch-aware one-shot setup
 ├── requirements.txt            x86_64 dependency set
 └── .env.example                Template for .env.local

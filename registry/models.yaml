@@ -52,6 +52,10 @@ models:
     served_model_name: baidu/Unlimited-OCR
     serve_backend: docker
     docker_image: vllm/vllm-openai:unlimited-ocr-arm64-cu130
+    docker_env:
+      TORCH_CUDA_ARCH_LIST: 12.1+PTX
+      VLLM_FLASHINFER_FORCE_TARGET: sm_121
+      VLLM_USE_FLASHINFER_SAMPLER: "0"
     vram_gb: 26
     max_model_len: 32768
     max_num_seqs: 1
