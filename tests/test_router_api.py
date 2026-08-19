@@ -1,6 +1,7 @@
 import json
 import unittest
 
+from ml.config import get_models, get_router_config
 from ml.router_api import (
     RoutingError,
     advertised_models,
@@ -15,10 +16,10 @@ class RouterApiTests(unittest.TestCase):
             "backends": {
                 "qwen": {
                     "url": "http://127.0.0.1:8101",
-                    "served_model": "nvidia/Qwen3.6-27B-NVFP4",
+                    "served_model": "unsloth/Qwen3.8-27B-NVFP4",
                     "models": [
-                        "nvidia/Qwen3.6-27B-NVFP4",
-                        "qwen3.6-27b-nvfp4-coserve",
+                        "unsloth/Qwen3.8-27B-NVFP4",
+                        "qwen3.8-27b-nvfp4-coserve",
                     ],
                 },
                 "detector": {
@@ -33,7 +34,7 @@ class RouterApiTests(unittest.TestCase):
     def test_routes_json_by_model_and_rewrites_alias(self):
         body = json.dumps(
             {
-                "model": "qwen3.6-27b-nvfp4-coserve",
+                "model": "qwen3.8-27b-nvfp4-coserve",
                 "messages": [{"role": "user", "content": "hi"}],
             }
         ).encode()
@@ -48,7 +49,7 @@ class RouterApiTests(unittest.TestCase):
 
         self.assertEqual(backend, "qwen")
         self.assertEqual(
-            json.loads(forwarded)["model"], "nvidia/Qwen3.6-27B-NVFP4"
+            json.loads(forwarded)["model"], "unsloth/Qwen3.8-27B-NVFP4"
         )
 
     def test_routes_raw_image_by_path(self):
@@ -80,7 +81,7 @@ class RouterApiTests(unittest.TestCase):
                 self.config,
                 path="/v1/chat/completions",
                 content_type="application/json",
-                body=b'{"model":"qwen3.6-27b-nvfp4-coserve"}',
+                body=b'{"model":"qwen3.8-27b-nvfp4-coserve"}',
                 model_header="pp-ocrv6-medium-det",
             )
 
@@ -90,8 +91,8 @@ class RouterApiTests(unittest.TestCase):
         self.assertEqual(
             ids,
             {
-                "nvidia/Qwen3.6-27B-NVFP4",
-                "qwen3.6-27b-nvfp4-coserve",
+                "unsloth/Qwen3.8-27B-NVFP4",
+                "qwen3.8-27b-nvfp4-coserve",
                 "pp-ocrv6-medium-det",
             },
         )
@@ -100,6 +101,21 @@ class RouterApiTests(unittest.TestCase):
         self.config["max_concurrency"] = 0
         with self.assertRaisesRegex(ValueError, "at least 1"):
             validate_config(self.config)
+
+    def test_registry_qwen_route_matches_coserve_profile(self):
+        router = get_router_config()
+        models = get_models()
+        backend = router["backends"]["qwen"]
+        alias = "qwen3.8-27b-nvfp4-coserve"
+        profile = models[alias]
+
+        self.assertIn(alias, backend["models"])
+        self.assertEqual(profile["served_model_name"], backend["served_model"])
+        self.assertEqual(profile["gpu_memory_utilization"], 0.30)
+        self.assertEqual(profile["max_model_len"], 32768)
+        self.assertEqual(profile["max_num_seqs"], 1)
+        self.assertNotIn("quantization", profile)
+        self.assertNotIn("speculative_config", profile)
 
 
 if __name__ == "__main__":

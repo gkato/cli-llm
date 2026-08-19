@@ -133,14 +133,14 @@ an NGC account; public images are pulled directly from their configured registry
 
 ### Three resident OCR/LLM services on one DGX Spark
 
-This profile keeps Qwen 3.6 27B NVFP4, Unlimited-OCR, and the PP-OCRv6 text
+This profile keeps Qwen 3.8 27B NVFP4, Unlimited-OCR, and the PP-OCRv6 text
 detector loaded at the same time. All public inference goes through a router
 with one shared permit, so only one of the three backends runs a request at a
 time.
 
 | Service | Internal URL | Memory control |
 |---------|--------------|----------------|
-| Qwen 3.6 27B NVFP4 | `127.0.0.1:8101` | 30% reservation, 32k context, one sequence, FP8 KV |
+| Qwen 3.8 27B NVFP4 | `127.0.0.1:8101` | 30% reservation, 32k context, one sequence, FP8 KV |
 | Unlimited-OCR | `127.0.0.1:8102` | 20% reservation, one sequence |
 | PP-OCRv6 medium detector | `127.0.0.1:8103` | FP16 weights, one in-flight request |
 | Model router | `0.0.0.0:8000` | Streaming proxy; one global inference slot |
@@ -152,12 +152,12 @@ services sequentially and wait for readiness between the two large models:
 
 ```bash
 # Download host-served weights. Unlimited-OCR downloads inside its container.
-python3 -m ml.cli models pull qwen3.6-27b-nvfp4-coserve
+python3 -m ml.cli models pull qwen3.8-27b-nvfp4-coserve
 python3 -m ml.cli models pull pp-ocrv6-medium-det
 
 # 1. Qwen: loopback-only; wait for `ready ✓` before continuing.
 VLLM_HOST=127.0.0.1 python3 -m ml.cli serve \
-  qwen3.6-27b-nvfp4-coserve --port 8101
+  qwen3.8-27b-nvfp4-coserve --port 8101
 python3 -m ml.cli logs -f
 python3 -m ml.cli status
 
@@ -186,7 +186,7 @@ API_KEY=$(sed -n 's/^API_KEY=//p' .env.local)
 curl -fsS http://127.0.0.1:8000/v1/chat/completions \
   -H "Authorization: Bearer $API_KEY" \
   -H "Content-Type: application/json" \
-  -d '{"model":"qwen3.6-27b-nvfp4-coserve","messages":[{"role":"user","content":"Say pong."}],"max_tokens":8}'
+  -d '{"model":"qwen3.8-27b-nvfp4-coserve","messages":[{"role":"user","content":"Say pong."}],"max_tokens":8}'
 ```
 
 PP-OCRv6 accepts raw image bytes, so its unique path selects the detector. An
@@ -372,8 +372,8 @@ tuning. A representative slice of what's registered:
 | Alias | Notes |
 |-------|-------|
 | `qwen3.6-27b-fp8` | Official FP8 checkpoint, 128k ctx — good default on Blackwell |
-| `qwen3.6-27b-nvfp4` | NVIDIA NVFP4, ~8 GB resident — **Blackwell only** |
-| `qwen3.6-27b-nvfp4-coserve` | 32k/one-request DGX Spark profile for the three-service stack |
+| `qwen3.6-27b-nvfp4` | NVIDIA ModelOpt NVFP4 — **Blackwell only** |
+| `qwen3.8-27b-nvfp4-coserve` | 32k/one-request DGX Spark profile for the three-service stack |
 | `pp-ocrv6-medium-det` | FP16 Transformers text-region detector, internal port 8103 |
 | `qwen3.6-27b` | bf16 base — use this one for fine-tuning |
 | `qwen3.5-9b-fp8` / `-fp8-long` | 40k throughput entry / 128k thinking-mode entry |

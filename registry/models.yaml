@@ -539,6 +539,31 @@ models:
     enable_auto_tool_choice: true
     language_model_only: true
 
+  # DGX Spark co-serving profile for the single-port Qwen + OCR stack.
+  # The checkpoint declares its mixed FP8/NVFP4 compressed-tensors format,
+  # so quantization must remain unset and be auto-detected by vLLM. A 30%
+  # reservation, 32k context, one sequence, and FP8 KV cache leave room for
+  # Unlimited-OCR's 20% engine plus PP-OCRv6 and host/CUDA overhead. MTP is
+  # intentionally disabled to minimize model and workspace memory.
+  qwen3.8-27b-nvfp4-coserve:
+    hf_id: unsloth/Qwen3.8-27B-NVFP4
+    served_model_name: unsloth/Qwen3.8-27B-NVFP4
+    vram_gb: 38
+    max_model_len: 32768
+    dtype: auto
+    gpu_memory_utilization: 0.30
+    max_num_seqs: 1
+    max_num_batched_tokens: 4096
+    enable_prefix_caching: true
+    enable_chunked_prefill: true
+    reasoning_parser: qwen3
+    tool_call_parser: qwen3_coder
+    enable_auto_tool_choice: true
+    language_model_only: true
+    extra_args:
+      - --kv-cache-dtype
+      - fp8
+
   # bf16 — preferred on Blackwell (sm_120+). Uses native bf16 tensor cores;
   # AWQ Marlin falls back to a slow generic path on Blackwell, so unless
   # you're VRAM-constrained, this is faster than the 4-bit variant.

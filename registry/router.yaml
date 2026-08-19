@@ -12,10 +12,10 @@ router:
     qwen:
       url: http://127.0.0.1:8101
       health_path: /v1/models
-      served_model: nvidia/Qwen3.6-27B-NVFP4
+      served_model: unsloth/Qwen3.8-27B-NVFP4
       models:
-        - nvidia/Qwen3.6-27B-NVFP4
-        - qwen3.6-27b-nvfp4-coserve
+        - unsloth/Qwen3.8-27B-NVFP4
+        - qwen3.8-27b-nvfp4-coserve
 
     unlimited_ocr:
       url: http://127.0.0.1:8102
