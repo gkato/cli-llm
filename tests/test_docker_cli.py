@@ -24,7 +24,41 @@ class DockerCliTests(unittest.TestCase):
         self.assertEqual(result.exit_code, 0, result.output)
         self.assertIn("Started Docker vLLM container", result.output)
         start.assert_called_once_with(
-            "unlimited-ocr", port=None, foreground=False, gpu_count=None
+            "unlimited-ocr",
+            port=None,
+            foreground=False,
+            gpu_count=None,
+            allow_co_resident=False,
+        )
+
+    @patch("ml.docker_server.start")
+    def test_serve_co_resident(self, start):
+        start.return_value = {
+            "container_name": "ml-compute-vllm-docker",
+            "container_id": "abcdef1234567890",
+            "image": "vllm/image:tag",
+            "served_model_name": "baidu/Unlimited-OCR",
+            "port": 8001,
+        }
+        result = self.runner.invoke(
+            cli,
+            [
+                "docker",
+                "serve",
+                "unlimited-ocr",
+                "--port",
+                "8001",
+                "--allow-co-resident",
+            ],
+        )
+
+        self.assertEqual(result.exit_code, 0, result.output)
+        start.assert_called_once_with(
+            "unlimited-ocr",
+            port=8001,
+            foreground=False,
+            gpu_count=None,
+            allow_co_resident=True,
         )
 
     @patch("ml.docker_server.status")

@@ -38,6 +38,18 @@ COMMON WORKFLOWS
     ml.cli docker logs -f                 # follow container logs
     ml.cli docker stop                    # stop + remove container
 
+
+  Lightweight Transformers vision serving:
+    ml.cli vision serve pp-ocrv6-medium-det --port 8103
+    ml.cli vision status
+    ml.cli vision stop
+
+
+  Single-port model router:
+    ml.cli router serve --port 8000
+    ml.cli router status
+    ml.cli router logs -f
+
 \b
   NVIDIA NIM container serving (preferred on GB10):
     ml.cli nim models                     # list NIM catalog
@@ -57,12 +69,14 @@ COMMON WORKFLOWS
     ml.cli info                           # GPU, CPU arch, library versions
 
 \b
-ONE SERVER AT A TIME
+CO-RESIDENT SERVICES
 
 \b
-  Local vLLM, Docker vLLM, and NIM bind port 8000 by default. Stop the
-  active backend before starting another: `ml.cli stop`, `ml.cli docker
-  stop`, or `ml.cli nim stop`.
+  Backends bind port 8000 by default. Normally stop the active backend
+  before starting another. A memory-capped local vLLM can intentionally
+  coexist with Docker vLLM by using different ports and passing
+  `docker serve --allow-co-resident`. The optional router exposes co-resident
+  services on one public port and serializes inference across them.
 
 \b
 DOCS
@@ -79,16 +93,18 @@ def cli():
     """ml-compute — OpenAI-compatible local and two-node inference.
 
     \b
-    Five serving backends behind a single CLI:
+    Six serving backends behind a single CLI:
       • vLLM      pip-installed Python process, safetensors →  `ml.cli serve <alias>`
       • llama.cpp local llama-server process, GGUF          →  `ml.cli serve llama <id>`
       • Docker    dedicated vLLM image from model registry  →  `ml.cli docker serve <alias>`
+      • Vision    Transformers object detection             →  `ml.cli vision serve <alias>`
       • NIM       NVIDIA TensorRT-LLM container, Docker      →  `ml.cli nim serve <alias>`
       • DSpark    patched Docker vLLM, two GB10 nodes, TP=2  →  `ml.cli dspark <action>`
 
-    All expose the same OpenAI-compatible /v1/* API. Run `ml.cli info` to
-    see what's installed on this box and which backend is recommended for
-    your GPU. Run any subcommand with --help for details.
+    Language-model backends expose an OpenAI-compatible /v1 API. The vision
+    backend exposes /v1/models and /v1/text/detections. Run `ml.cli info` to
+    see what's installed on this box and which backend is recommended. The
+    optional router presents all resident services on one public port.
     """
 
 
@@ -384,7 +400,18 @@ def docker_group():
               help="Run attached with logs in the terminal")
 @click.option("--gpus", type=click.IntRange(min=1), default=None,
               help="Number of GPUs to bind (default: all)")
-def docker_serve(name: str, port: int | None, foreground: bool, gpus: int | None):
+@click.option(
+    "--allow-co-resident",
+    is_flag=True,
+    help="Keep a memory-capped local server running on another port",
+)
+def docker_serve(
+    name: str,
+    port: int | None,
+    foreground: bool,
+    gpus: int | None,
+    allow_co_resident: bool,
+):
     """Start a Docker-backed vLLM model by registry alias.
 
     \b
@@ -394,7 +421,13 @@ def docker_serve(name: str, port: int | None, foreground: bool, gpus: int | None
     from ml.docker_server import start
 
     try:
-        info = start(name, port=port, foreground=foreground, gpu_count=gpus)
+        info = start(
+            name,
+            port=port,
+            foreground=foreground,
+            gpu_count=gpus,
+            allow_co_resident=allow_co_resident,
+        )
     except (RuntimeError, ValueError) as exc:
         raise click.ClickException(str(exc)) from exc
     click.echo(f"✓ Started Docker vLLM container ({info['container_name']})")
@@ -456,6 +489,169 @@ def docker_stop():
 def docker_logs(follow: bool, lines: int):
     """Show logs from the running or exited Docker vLLM container."""
     from ml.docker_server import tail_logs
+
+    tail_logs(lines=lines, follow=follow)
+
+
+# ---------------------------------------------------------------------------
+# Transformers vision — lightweight object/text detection
+# ---------------------------------------------------------------------------
+
+VISION_EPILOG = """
+
+QUICKSTART
+
+
+  Start PP-OCRv6 text detection beside the two vLLM services:
+    ml.cli vision serve pp-ocrv6-medium-det --port 8103
+    ml.cli vision logs -f
+
+
+  Send raw PNG/JPEG bytes (this returns regions, not recognized text):
+    curl --data-binary @page.png -H 'Content-Type: image/png' \\
+      http://localhost:8103/v1/text/detections
+"""
+
+
+@cli.group("vision", epilog=VISION_EPILOG)
+def vision_group():
+    """Manage lightweight Transformers vision models."""
+
+
+@vision_group.command("serve")
+@click.argument("name")
+@click.option("--port", type=int, default=None, help="Override registry port")
+@click.option("--foreground", is_flag=True, help="Run attached in the terminal")
+def vision_serve(name: str, port: int | None, foreground: bool):
+    """Start a registry-backed Transformers vision model."""
+    from ml.vision_server import start
+
+    try:
+        info = start(name, port=port, foreground=foreground)
+    except (RuntimeError, ValueError) as exc:
+        raise click.ClickException(str(exc)) from exc
+    click.echo(f"✓ Started Transformers vision server (pid={info['pid']})")
+    click.echo(f"  Model:    {info['served_model_name']}")
+    click.echo(f"  Port:     {info['port']}")
+    click.echo(f"  Endpoint: http://localhost:{info['port']}/v1/text/detections")
+    click.echo("  Logs:     python3 -m ml.cli vision logs -f")
+    click.echo("  Status:   python3 -m ml.cli vision status")
+
+
+@vision_group.command("status")
+def vision_status():
+    """Show Transformers vision server state and readiness."""
+    from ml.vision_server import status
+
+    state = status()
+    if not state["running"]:
+        click.echo("State: not running")
+        return
+    readiness = "ready ✓" if state["ready"] else "loading…"
+    click.echo(f"State: {readiness}")
+    click.echo(f"  Model:    {state['served_model_name']}")
+    click.echo(f"  PID:      {state['pid']}")
+    click.echo(f"  URL:      http://localhost:{state['port']}")
+    click.echo(f"  Started:  {state['started_at']}")
+    click.echo(f"  Logs:     {state['log_path']}")
+
+
+@vision_group.command("stop")
+def vision_stop():
+    """Stop the Transformers vision server."""
+    from ml.vision_server import stop
+
+    if stop():
+        click.echo("✓ Stopped Transformers vision server")
+    else:
+        click.echo("Nothing running")
+
+
+@vision_group.command("logs")
+@click.option("-f", "--follow", is_flag=True, help="Follow log output")
+@click.option("-n", "--lines", type=int, default=50, show_default=True)
+def vision_logs(follow: bool, lines: int):
+    """Show Transformers vision server logs."""
+    from ml.vision_server import tail_logs
+
+    tail_logs(lines=lines, follow=follow)
+
+
+# ---------------------------------------------------------------------------
+# Single-port model router
+# ---------------------------------------------------------------------------
+
+ROUTER_EPILOG = """
+
+ROUTING
+
+
+  JSON OpenAI requests are routed by their `model` field. Raw-image PP-OCR
+  requests are routed by /v1/text/detections or an explicit X-Model header.
+  A shared concurrency limit serializes inference across all backends.
+  Backend URLs and accepted model IDs live in registry/router.yaml.
+"""
+
+
+@cli.group("router", epilog=ROUTER_EPILOG)
+def router_group():
+    """Expose resident model services through one public port."""
+
+
+@router_group.command("serve")
+@click.option("--port", type=int, default=None, help="Override registry port")
+@click.option("--foreground", is_flag=True, help="Run attached in the terminal")
+def router_serve(port: int | None, foreground: bool):
+    """Start the streaming model router."""
+    from ml.router_server import start
+
+    try:
+        info = start(port=port, foreground=foreground)
+    except (RuntimeError, ValueError) as exc:
+        raise click.ClickException(str(exc)) from exc
+    click.echo(f"✓ Started model router (pid={info['pid']})")
+    click.echo(f"  URL:    http://localhost:{info['port']}/v1")
+    click.echo("  Routes: registry/router.yaml")
+    click.echo("  Logs:   python3 -m ml.cli router logs -f")
+    click.echo("  Status: python3 -m ml.cli router status")
+
+
+@router_group.command("status")
+def router_status():
+    """Show router and backend readiness."""
+    from ml.router_server import status
+
+    state = status()
+    if not state["running"]:
+        click.echo("State: not running")
+        return
+    readiness = "ready ✓" if state["ready"] else "degraded…"
+    click.echo(f"State: {readiness}")
+    click.echo(f"  PID:     {state['pid']}")
+    click.echo(f"  URL:     http://localhost:{state['port']}")
+    for name, backend in state.get("backends", {}).items():
+        mark = "ready ✓" if backend.get("ready") else "unavailable ✗"
+        click.echo(f"  {name}: {mark}")
+    click.echo(f"  Logs:    {state['log_path']}")
+
+
+@router_group.command("stop")
+def router_stop():
+    """Stop the model router without stopping its backends."""
+    from ml.router_server import stop
+
+    if stop():
+        click.echo("✓ Stopped model router")
+    else:
+        click.echo("Nothing running")
+
+
+@router_group.command("logs")
+@click.option("-f", "--follow", is_flag=True, help="Follow log output")
+@click.option("-n", "--lines", type=int, default=50, show_default=True)
+def router_logs(follow: bool, lines: int):
+    """Show model-router logs."""
+    from ml.router_server import tail_logs
 
     tail_logs(lines=lines, follow=follow)
 

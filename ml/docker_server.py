@@ -181,22 +181,36 @@ def _format_cmd(cmd: list[str], api_key: str | None) -> str:
     return " ".join(shlex.quote(value) for value in redacted)
 
 
+def _validate_local_co_residency(
+    local_state: dict | None,
+    port: int,
+    allow_co_resident: bool,
+) -> None:
+    if local_state and not allow_co_resident:
+        raise RuntimeError(
+            "A local vLLM/llama.cpp server is already running. Use "
+            "`python3 -m ml.cli stop` first, or pass --allow-co-resident "
+            "with a different port and a memory-capped registry profile."
+        )
+    if local_state and int(local_state["port"]) == port:
+        raise RuntimeError(
+            f"Port {port} is already used by the local "
+            f"{local_state.get('backend', 'vllm')} server"
+        )
+
+
 def start(
     name: str,
     port: int | None = None,
     foreground: bool = False,
     gpu_count: int | None = None,
+    allow_co_resident: bool = False,
 ) -> dict:
     """Start a registry-backed vLLM Docker container."""
     if _container_running():
         raise RuntimeError(
             f"Docker vLLM container {CONTAINER_NAME!r} is already running. "
             "Use `python3 -m ml.cli docker stop` first."
-        )
-    if running_state():
-        raise RuntimeError(
-            "A local vLLM/llama.cpp server is already running. "
-            "Use `python3 -m ml.cli stop` first."
         )
     if _container_running(NIM_CONTAINER_NAME):
         raise RuntimeError(
@@ -208,6 +222,8 @@ def start(
 
     image, cfg = resolve_model(name)
     port = port or VLLM_PORT
+    local_state = running_state()
+    _validate_local_co_residency(local_state, port, allow_co_resident)
     api_key = get_api_key()
     HF_CACHE.mkdir(parents=True, exist_ok=True)
 

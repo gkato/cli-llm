@@ -22,6 +22,15 @@ pyyaml
 python-dotenv
 requests
 
+# Lightweight Transformers vision serving (PP-OCRv6 detector)
+transformers>=5.14
+torchvision
+Pillow
+opencv-python-headless
+fastapi
+uvicorn
+httpx
+
 # Optional: fine-tuning stack (only needed if you run `ml-compute train`)
 # Uncomment to enable training support:
 # torch

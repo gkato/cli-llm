@@ -58,6 +58,14 @@ class DockerServerTests(unittest.TestCase):
                 api_key=None,
             )
 
+    def test_co_residency_requires_opt_in_and_distinct_port(self):
+        local = {"port": 8000, "backend": "vllm"}
+        with self.assertRaisesRegex(RuntimeError, "allow-co-resident"):
+            docker_server._validate_local_co_residency(local, 8001, False)
+        with self.assertRaisesRegex(RuntimeError, "Port 8000"):
+            docker_server._validate_local_co_residency(local, 8000, True)
+        docker_server._validate_local_co_residency(local, 8001, True)
+
     @patch("ml.docker_server.requests.get")
     @patch("ml.docker_server.get_api_key", return_value="secret")
     @patch("ml.docker_server._container_exists", return_value=True)

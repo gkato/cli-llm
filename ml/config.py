@@ -36,6 +36,11 @@ def get_llama_models() -> dict:
     return _safe_load("llama_models")
 
 
+def get_router_config() -> dict:
+    """Load the single-port model router configuration."""
+    return _safe_load("router")
+
+
 def _safe_load(name: str) -> dict:
     try:
         return _load_yaml(name).get(name, {}) or {}

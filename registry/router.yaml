@@ -1,0 +1,40 @@
+router:
+  # The router is the only service intended to face the LAN. Start each model
+  # backend with VLLM_HOST=127.0.0.1 on its configured internal port.
+  host: 0.0.0.0
+  port: 8000
+  request_timeout_seconds: 600
+  # One permit is shared across all backends. Extra requests wait at the
+  # router, so Qwen, Unlimited-OCR, and PP-OCRv6 never infer concurrently.
+  max_concurrency: 1
+
+  backends:
+    qwen:
+      url: http://127.0.0.1:8101
+      health_path: /v1/models
+      served_model: nvidia/Qwen3.6-27B-NVFP4
+      models:
+        - nvidia/Qwen3.6-27B-NVFP4
+        - qwen3.6-27b-nvfp4-coserve
+
+    unlimited_ocr:
+      url: http://127.0.0.1:8102
+      health_path: /v1/models
+      served_model: baidu/Unlimited-OCR
+      models:
+        - baidu/Unlimited-OCR
+        - unlimited-ocr
+
+    pp_ocrv6_detector:
+      url: http://127.0.0.1:8103
+      health_path: /health
+      served_model: pp-ocrv6-medium-det
+      models:
+        - pp-ocrv6-medium-det
+        - PaddlePaddle/PP-OCRv6_medium_det_safetensors
+
+  # PP-OCRv6 receives raw image bytes, so there is no JSON model field to
+  # inspect. Its unique endpoint is routed by path. X-Model can override this
+  # for clients that want to state the model explicitly.
+  path_routes:
+    /v1/text/detections: pp_ocrv6_detector

@@ -78,8 +78,9 @@ if [ "$IS_ARM64" -eq 1 ]; then
     huggingface-hub hf-transfer hf-xet \
     click pyyaml python-dotenv requests \
     torch torchvision torchaudio \
-    transformers peft accelerate trl datasets safetensors \
-    sentencepiece protobuf tokenizers
+    "transformers>=5.14" peft accelerate trl datasets safetensors \
+    sentencepiece protobuf tokenizers \
+    Pillow opencv-python-headless fastapi uvicorn httpx
   # vLLM on ARM64 is experimental; try, fall back gracefully if it fails
   if "$PY" -m pip install $PIP_FLAGS "vllm[bench]>=0.27" 2>/tmp/vllm_install.log; then
     echo "  ✓ vLLM installed (ARM64 build)"

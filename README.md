@@ -4,15 +4,21 @@ Local LLM inference and fine-tuning on your own hardware. Built for the **NVIDIA
 (GB10)** — Grace CPU + Blackwell GPU with 128 GB unified memory — and works on any local
 box with an NVIDIA GPU.
 
-One CLI, five serving backends, all speaking the same OpenAI-compatible `/v1` API:
+One CLI, six serving backends. Language models use the OpenAI-compatible `/v1`
+API; lightweight vision detectors use a small task-specific `/v1` API:
 
 | Backend | Runs | Weights | Command |
 |---------|------|---------|---------|
 | **vLLM** | pip-installed Python process | safetensors (bf16 / FP8 / NVFP4 / AWQ) | `serve <alias>` |
 | **llama.cpp** | local `llama-server` binary | GGUF | `serve llama <id>` |
 | **Docker vLLM** | dedicated per-model container | safetensors + custom vLLM build | `docker serve <alias>` |
+| **Transformers vision** | local Python process | safetensors object detectors | `vision serve <alias>` |
 | **NIM** | Docker container (TensorRT-LLM) | NVIDIA-packaged | `nim serve <alias>` |
 | **DSpark cluster** | patched Docker/vLLM on two GB10 nodes | DeepSeek V4 Flash 0731 | `dspark <action>` |
+
+An optional streaming router exposes several resident services through one
+public port, selects the backend from the request's `model` field, and can
+serialize inference across them.
 
 Plus a LoRA fine-tuning path that runs on the same box (aarch64-native, no Unsloth).
 
@@ -29,7 +35,8 @@ Plus a LoRA fine-tuning path that runs on the same box (aarch64-native, no Unslo
 ## What It Is Not
 
 - Not a chat UI — point [llm-playground](../llm-playgroung) or any OpenAI client at it.
-- Not multi-tenant — **one server at a time**, one GPU.
+- Not a multi-tenant scheduler. Multiple explicitly memory-capped services can coexist;
+  the optional router provides a small global inference queue for this profile.
 - Not a cloud deployment tool. It runs on the box in front of you.
 
 ---
@@ -124,6 +131,88 @@ python3 -m ml.cli docker stop
 This path needs Docker with NVIDIA Container Toolkit GPU support. It does not need
 an NGC account; public images are pulled directly from their configured registry.
 
+### Three resident OCR/LLM services on one DGX Spark
+
+This profile keeps Qwen 3.6 27B NVFP4, Unlimited-OCR, and the PP-OCRv6 text
+detector loaded at the same time. All public inference goes through a router
+with one shared permit, so only one of the three backends runs a request at a
+time.
+
+| Service | Internal URL | Memory control |
+|---------|--------------|----------------|
+| Qwen 3.6 27B NVFP4 | `127.0.0.1:8101` | 30% reservation, 32k context, one sequence, FP8 KV |
+| Unlimited-OCR | `127.0.0.1:8102` | 20% reservation, one sequence |
+| PP-OCRv6 medium detector | `127.0.0.1:8103` | FP16 weights, one in-flight request |
+| Model router | `0.0.0.0:8000` | Streaming proxy; one global inference slot |
+
+The two vLLM reservations total about 64 GB of the Spark's 128 GB unified
+pool. PP-OCRv6 is below 0.2 GB for weights. The remaining memory covers CUDA
+workspaces, CPU allocations, page cache, and model-loading headroom. Start the
+services sequentially and wait for readiness between the two large models:
+
+```bash
+# Download host-served weights. Unlimited-OCR downloads inside its container.
+python3 -m ml.cli models pull qwen3.6-27b-nvfp4-coserve
+python3 -m ml.cli models pull pp-ocrv6-medium-det
+
+# 1. Qwen: loopback-only; wait for `ready ✓` before continuing.
+VLLM_HOST=127.0.0.1 python3 -m ml.cli serve \
+  qwen3.6-27b-nvfp4-coserve --port 8101
+python3 -m ml.cli logs -f
+python3 -m ml.cli status
+
+# 2. Unlimited-OCR: explicit opt-in permits coexistence on another port.
+VLLM_HOST=127.0.0.1 python3 -m ml.cli docker serve unlimited-ocr \
+  --port 8102 --allow-co-resident
+python3 -m ml.cli docker logs -f
+python3 -m ml.cli docker status
+
+# 3. Lightweight text-region detector, also loopback-only.
+VLLM_HOST=127.0.0.1 python3 -m ml.cli vision serve \
+  pp-ocrv6-medium-det --port 8103
+python3 -m ml.cli vision logs -f
+python3 -m ml.cli vision status
+
+# 4. Public router. Its health is ready when all three backends are ready.
+python3 -m ml.cli router serve --port 8000
+python3 -m ml.cli router status
+```
+
+The public API is now always port 8000. OpenAI-compatible requests are routed
+by `model`; aliases are translated to the backend's served model ID:
+
+```bash
+API_KEY=$(sed -n 's/^API_KEY=//p' .env.local)
+curl -fsS http://127.0.0.1:8000/v1/chat/completions \
+  -H "Authorization: Bearer $API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"model":"qwen3.6-27b-nvfp4-coserve","messages":[{"role":"user","content":"Say pong."}],"max_tokens":8}'
+```
+
+PP-OCRv6 accepts raw image bytes, so its unique path selects the detector. An
+optional `X-Model: pp-ocrv6-medium-det` header can make that selection explicit:
+
+```bash
+API_KEY=$(sed -n 's/^API_KEY=//p' .env.local)
+curl -fsS --data-binary @page.png \
+  -H "Authorization: Bearer $API_KEY" \
+  -H "Content-Type: image/png" \
+  -H "X-Model: pp-ocrv6-medium-det" \
+  http://127.0.0.1:8000/v1/text/detections
+```
+
+The existing Unlimited-OCR PDF helper can use the same router URL:
+
+```bash
+UNLIMITED_BASE_URL=http://127.0.0.1:8000/v1 \
+  scripts/pdf_to_gemma_curl.sh document.pdf
+```
+
+The router's `max_concurrency: 1` is a global queue: it holds the permit until
+the upstream response has finished streaming. Calls made directly to internal
+ports 8101–8103 bypass that queue, so keep those ports loopback-only and use
+port 8000 for application traffic.
+
 ### NIM (Docker / TensorRT-LLM)
 
 ```bash
@@ -207,17 +296,18 @@ for llama.cpp, a LoRA `name` if the registry entry defines adapters.
 ```bash
 python3 -m ml.cli stop                        # works for vLLM or llama.cpp
 python3 -m ml.cli restart gemma4-12b-it       # stop + start a different vLLM model
+python3 -m ml.cli router stop                 # stop public traffic before backends
 python3 -m ml.cli docker stop                 # dedicated vLLM image lifecycle
+python3 -m ml.cli vision stop                 # Transformers vision lifecycle
 python3 -m ml.cli nim stop                    # NIM has its own lifecycle
 python3 -m ml.cli dspark stop                 # stops both cluster nodes
 ```
 
-**One model workload at a time.** The local backends bind port 8000; DSpark defaults to
-8888 and uses a symmetric memory allocation on both nodes. The 256K coexistence profile
-reserves worker capacity for the separately capped Harness. vLLM and llama.cpp share one
-state file (`data/server.json`) and one `stop`; Docker vLLM, NIM, and DSpark have separate
-lifecycles.
-Stop whatever's running before starting something else.
+Backends bind port 8000 by default, so ordinary profiles still need to be stopped before
+starting another. The DGX co-serving profile above is the explicit exception: it uses
+loopback ports 8101–8103, capped registry entries, `--allow-co-resident`, and a router on
+public port 8000. vLLM and llama.cpp share `data/server.json`; Docker vLLM, Transformers
+vision, the router, NIM, and DSpark have separate state and lifecycle commands.
 
 ---
 
@@ -265,14 +355,15 @@ cache reaches contexts vLLM can't afford.
 
 ## Model Registries
 
-Three registry YAML files cover the serving backends. Adding a model is normally a
+Four registry YAML files cover the serving backends and router. Adding a model is normally a
 registry edit — no code changes.
 
 | File | Backend | Key fields |
 |------|---------|-----------|
-| [registry/models.yaml](registry/models.yaml) | vLLM / Docker vLLM | `hf_id`, `serve_backend`, `docker_image`, `docker_env`, `docker_args`, `max_model_len`, `quantization`, `gpu_memory_utilization`, `max_num_seqs`, `max_num_batched_tokens`, `enable_prefix_caching`, `enable_chunked_prefill`, `speculative_config`, `reasoning_parser`, `tool_call_parser`, `enable_auto_tool_choice`, `language_model_only`, `rope_scaling`, `loras`, `extra_args` |
+| [registry/models.yaml](registry/models.yaml) | vLLM / Docker vLLM / Transformers vision | `hf_id`, `serve_backend`, `docker_image`, `vision_config`, `max_model_len`, `quantization`, `gpu_memory_utilization`, `max_num_seqs`, `max_num_batched_tokens`, `enable_prefix_caching`, `enable_chunked_prefill`, `speculative_config`, `reasoning_parser`, `tool_call_parser`, `enable_auto_tool_choice`, `language_model_only`, `rope_scaling`, `loras`, `extra_args` |
 | [registry/llama_models.yaml](registry/llama_models.yaml) | llama.cpp | `hf_repo` or `gguf_path`, `n_gpu_layers`, `ctx_size`, `served_name`, `extra_args` |
 | [registry/nim_catalog.yaml](registry/nim_catalog.yaml) | NIM | `image`, `model_name`, `gpu_count`, `extra_env` |
+| [registry/router.yaml](registry/router.yaml) | Single-port router | `host`, `port`, `backends`, `models`, `served_model`, `path_routes` |
 
 `registry/models.yaml` is the big one — every entry carries comments explaining *why* those
 numbers, with measured memory breakdowns per model and per context length. Read them before
@@ -282,6 +373,8 @@ tuning. A representative slice of what's registered:
 |-------|-------|
 | `qwen3.6-27b-fp8` | Official FP8 checkpoint, 128k ctx — good default on Blackwell |
 | `qwen3.6-27b-nvfp4` | NVIDIA NVFP4, ~8 GB resident — **Blackwell only** |
+| `qwen3.6-27b-nvfp4-coserve` | 32k/one-request DGX Spark profile for the three-service stack |
+| `pp-ocrv6-medium-det` | FP16 Transformers text-region detector, internal port 8103 |
 | `qwen3.6-27b` | bf16 base — use this one for fine-tuning |
 | `qwen3.5-9b-fp8` / `-fp8-long` | 40k throughput entry / 128k thinking-mode entry |
 | `gemma4-12b-it` / `-it-fp8` / `-it-ft` | bf16 / runtime-FP8 / bf16 + LoRA adapter |
@@ -527,6 +620,21 @@ python3 -m ml.cli stop
 python3 -m ml.cli restart <alias>
 python3 -m ml.cli status                         # backend, model, PID, URL, readiness, API key
 python3 -m ml.cli logs -f
+
+# Dedicated Docker vLLM, optionally beside a capped local model
+python3 -m ml.cli docker serve <alias> --port 8102 --allow-co-resident
+
+# Transformers vision detector
+python3 -m ml.cli vision serve pp-ocrv6-medium-det --port 8103
+python3 -m ml.cli vision status
+python3 -m ml.cli vision logs -f
+python3 -m ml.cli vision stop
+
+# Single public endpoint for all resident services
+python3 -m ml.cli router serve --port 8000
+python3 -m ml.cli router status
+python3 -m ml.cli router logs -f
+python3 -m ml.cli router stop
 ```
 
 Benchmark the running server with vLLM's native serving benchmark. For a quick
@@ -615,6 +723,10 @@ ml-compute/
 │   ├── cli.py                  Click CLI — every command lives here
 │   ├── vllm_server.py          vLLM lifecycle + Blackwell env setup
 │   ├── docker_server.py        dedicated vLLM Docker-image lifecycle
+│   ├── vision_server.py        Transformers vision process lifecycle
+│   ├── vision_api.py           text-detection HTTP API + one-request queue
+│   ├── router_server.py        single-port router process lifecycle
+│   ├── router_api.py           model-aware streaming reverse proxy
 │   ├── vllm_args.py            shared registry → vLLM argument translation
 │   ├── llama_server.py         llama.cpp (GGUF) lifecycle
 │   ├── nim_server.py           NIM container lifecycle (Docker)
@@ -631,6 +743,7 @@ ml-compute/
 │   ├── models.yaml             vLLM aliases — heavily commented, the reference doc
 │   ├── llama_models.yaml       GGUF aliases
 │   ├── nim_catalog.yaml        NIM container catalog
+│   ├── router.yaml             public model IDs → internal backend URLs
 │   ├── datasets.yaml           Fine-tuning dataset aliases
 │   └── apis.yaml               Hosted-provider model lists (teacher models)
 ├── Makefile.gb10               LoRA fine-tuning on DGX Spark (bf16, HF+PEFT+TRL)
@@ -645,9 +758,11 @@ ml-compute/
 ├── data/                       Created by setup.sh
 │   ├── hf_cache/               HuggingFace weights
 │   ├── adapters/<name>/        Trained LoRA adapters
-│   ├── logs/{vllm,llama}.log   Server logs; training logs alongside
+│   ├── logs/{vllm,llama,vision,router}.log  Server logs; training logs alongside
 │   ├── server.json             Running server state (PID, port, model, backend)
-│   └── docker_state.json       Managed Docker vLLM container state
+│   ├── docker_state.json       Managed Docker vLLM container state
+│   ├── vision_server.json      Transformers vision server state
+│   └── router_server.json      Model-router server state
 ├── setup.sh                    Arch-aware one-shot setup
 ├── requirements.txt            x86_64 dependency set
 └── .env.example                Template for .env.local
@@ -665,7 +780,7 @@ All optional — defaults in [ml/config.py](ml/config.py). Set them in `.env.loc
 | `HF_TOKEN` | — | Gated models (Llama, Gemma). Omit the line entirely if unset — an empty value breaks the auth header |
 | `NGC_API_KEY` | — | Required for NIM containers |
 | `VLLM_HOST` | `0.0.0.0` | Bind address (shared by all backends) |
-| `VLLM_PORT` | `8000` | Port (shared by all backends) |
+| `VLLM_PORT` | `8000` | Default local/Docker language-model port; CLI `--port` overrides it |
 | `DATA_DIR` | `./data` | Logs, adapters, server state, HF cache |
 | `REGISTRY_DIR` | `./registry` | Where the YAML registries load from |
 | `HF_HOME` | `./data/hf_cache` | HuggingFace cache root |

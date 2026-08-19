@@ -69,6 +69,33 @@ models:
       - --mm-processor-cache-gb
       - "0"
 
+  # PP-OCRv6 text-line detector. This is a small convolutional object-
+  # detection model, not a generative VLM, so it uses the lightweight
+  # Transformers vision backend instead of vLLM. The upstream weights are
+  # F32; FP16 is the practical DGX Spark representation and reduces their
+  # resident footprint without introducing a separate conversion artifact.
+  # Post-processing returns text bounding boxes and confidence scores;
+  # character recognition remains the job of Unlimited-OCR (or a PP-OCR rec
+  # checkpoint). One in-flight request avoids concurrent CUDA work with the
+  # two resident vLLM engines.
+  pp-ocrv6-medium-det:
+    hf_id: PaddlePaddle/PP-OCRv6_medium_det_safetensors
+    served_model_name: pp-ocrv6-medium-det
+    serve_backend: vision
+    task: text_detection
+    vram_gb: 0.2
+    default_port: 8103
+    vision_config:
+      device: cuda:0
+      dtype: float16
+      max_concurrency: 1
+      threshold: 0.2
+      box_threshold: 0.45
+      max_candidates: 3000
+      unclip_ratio: 1.4
+      max_image_pixels: 40000000
+      max_image_bytes: 25000000
+
   # Qwen3-8B with YaRN context extension (40k native → 65k effective).
   # Mild quality degradation on long contexts, but covers the 5% of cases
   # that overflow 40k. Use this as the distillation base.
@@ -424,9 +451,11 @@ models:
       - --max-num-batched-tokens
       - "8192"
 
-  # Official NVIDIA NVFP4 checkpoint (TensorRT Model-Optimizer, 4-bit weights
-  # + FP8 activations). ~8 GB resident — half the footprint of FP8. Served
-  # via vLLM's `modelopt_fp4` quantization method.
+  # Official NVIDIA NVFP4 checkpoint (TensorRT Model-Optimizer). NVIDIA
+  # reports about 2.5x lower disk/GPU memory than BF16. It is served through
+  # vLLM's `modelopt` quantization method: the checkpoint mixes FP8 attention
+  # projections with W4A16 NVFP4 MLP layers, so it must not be forced through
+  # the pure-FP4 loader.
   #
   # HARDWARE: NVFP4 needs native FP4 tensor cores → Blackwell only
   # (sm_100 / sm_120 / sm_121: B200, RTX PRO, GB10/DGX Spark). On Ada/Ampere
@@ -441,7 +470,7 @@ models:
     vram_gb: 60
     max_model_len: 65536
     dtype: auto
-    quantization: modelopt_fp4
+    quantization: modelopt
     gpu_memory_utilization: 0.80
     max_num_seqs: 2
     max_num_batched_tokens: 8192
@@ -454,6 +483,36 @@ models:
     tool_call_parser: qwen3_coder
     enable_auto_tool_choice: true
     language_model_only: true
+
+  # DGX Spark co-serving profile: keep Qwen resident beside Unlimited-OCR
+  # (gpu_memory_utilization=0.20) and PP-OCRv6. The standard entry above is
+  # tuned to use the GPU by itself; its 0.80 reservation cannot coexist with
+  # another vLLM engine on the 128 GB unified-memory pool.
+  #
+  # At 0.30 vLLM targets ~38 GB total for weights, workspaces, and KV cache.
+  # A 32k context, FP8 KV cache, and one sequence fit that reservation while
+  # leaving substantial headroom for the second engine, model loading, the
+  # Grace CPU, page cache, and CUDA runtime. Speculative decoding is omitted
+  # to keep the memory/workspace profile predictable.
+  qwen3.6-27b-nvfp4-coserve:
+    hf_id: nvidia/Qwen3.6-27B-NVFP4
+    served_model_name: nvidia/Qwen3.6-27B-NVFP4
+    vram_gb: 38
+    max_model_len: 32768
+    dtype: auto
+    quantization: modelopt
+    gpu_memory_utilization: 0.30
+    max_num_seqs: 1
+    max_num_batched_tokens: 4096
+    enable_prefix_caching: true
+    enable_chunked_prefill: true
+    reasoning_parser: qwen3
+    tool_call_parser: qwen3_coder
+    enable_auto_tool_choice: true
+    language_model_only: true
+    extra_args:
+      - --kv-cache-dtype
+      - fp8
 
   # === Qwen 3.8 — 27B ===
   qwen3.8-27b-nvfp4:
