@@ -116,6 +116,7 @@ class RouterApiTests(unittest.TestCase):
         self.assertEqual(profile["max_num_seqs"], 1)
         self.assertNotIn("quantization", profile)
         self.assertNotIn("speculative_config", profile)
+        self.assertNotIn("language_model_only", profile)
 
 
 if __name__ == "__main__":

@@ -559,7 +559,6 @@ models:
     reasoning_parser: qwen3
     tool_call_parser: qwen3_coder
     enable_auto_tool_choice: true
-    language_model_only: true
     extra_args:
       - --kv-cache-dtype
       - fp8
