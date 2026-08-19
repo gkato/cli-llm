@@ -83,11 +83,29 @@ class TextDetectionService:
         if pixel_values.is_floating_point():
             pixel_values = pixel_values.to(self.dtype)
 
+        # Paddle's image processor records the original image dimensions as a
+        # tensor during preprocessing.  Its post-processor calls tensor
+        # methods on this value, so rebuilding it as a list of Python tuples
+        # raises an AttributeError at inference time.  Keep the processor's
+        # value when available, with a tensor fallback for compatible custom
+        # processors that do not return target_sizes.
+        target_sizes = inputs.get("target_sizes")
+        if target_sizes is None:
+            target_sizes = torch.tensor(
+                [[height, width]], dtype=torch.float32
+            )
+
         with torch.inference_mode():
             outputs = self.model(pixel_values=pixel_values)
+
+        # PP-OCR post-processing converts the probability map to NumPy and
+        # passes it through OpenCV.  Cast FP16/BF16 model output to FP32 first;
+        # those lower-precision NumPy dtypes are not portable across OpenCV
+        # builds.
+        outputs.last_hidden_state = outputs.last_hidden_state.float()
         results = self.processor.post_process_object_detection(
             outputs,
-            target_sizes=[(height, width)],
+            target_sizes=target_sizes,
             threshold=threshold,
             box_threshold=box_threshold,
             max_candidates=max_candidates,
