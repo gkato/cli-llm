@@ -868,3 +868,43 @@ models:
     proxy_url: http://127.0.0.1:8000
     default_thinking: low
     cluster_profile: config/dspark-spark4e89-thinkstationpgx.env
+
+  # DeepSeek V4 Flash 0731 on one dedicated DGX Spark (TP=1). This is
+  # MiaAI-Lab's 3.0-bpw EXL3/ExLlamaV3 checkpoint served by the digest-pinned
+  # SparkInfer runtime. It is a separate lifecycle from the two-node `dspark`
+  # entry above: operate it with `python3 -m ml.cli dspark-one <action>`.
+  #
+  # The deep-context profile deliberately consumes about 94% of the Spark's
+  # unified memory and permits one sequence. It is not a Harness-coexistence
+  # profile. MiaAI-Lab reports 44-47 structured decode tok/s and exact needle
+  # recall at 370,104 tokens; 384K is the reviewed request ceiling.
+  deepseek-v4-flash-0731-dspark-one:
+    hf_id: 0xSero/deepseek-v4-flash-0731-spark
+    served_model_name: deepseek-v4-flash-0731
+    serve_backend: dspark-one
+    external_recipe: scripts/DS4-Flash-One-DSpark.sh
+    upstream_repo: https://github.com/MiaAI-Lab/DeepSeek-v4-Flash-One-DGX-Spark
+    upstream_revision: fdcd538fbf95fb15b2d6850db9613d22b2c889b8
+    nodes: 1
+    tensor_parallel_size: 1
+    quantization: exl3
+    bits_per_weight: 3.0
+    runtime_image: ghcr.io/0xsero/deepseek-v4-flash-0731-spark-sparkinfer@sha256:2e077489a83a0360952828051fe7f7a32c1801e5ce8436d85f7267583d614ff4
+    model_revision: 22f28d32b9b29b4352eaa380ff8c2c170b2847ab
+    vram_gb: 114.3
+    max_model_len: 384000
+    max_num_seqs: 1
+    max_num_batched_tokens: 8224
+    gpu_memory_utilization: 0.94
+    kv_cache_dtype: nvfp4_ds_mla
+    kv_record_layout: stock432
+    speculative_method: dspark
+    speculative_tokens: 5
+    draft_experts: 64
+    raw_api_url: http://127.0.0.1:8888
+    proxy_bind: 0.0.0.0:8000
+    proxy_url: http://127.0.0.1:8000
+    default_thinking: max
+    dedicated_host: true
+    harness_coexistence: false
+    machine_profile: config/dspark-one-deepseek-v4-flash-0731.env

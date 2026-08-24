@@ -38,19 +38,19 @@ COMMON WORKFLOWS
     ml.cli docker logs -f                 # follow container logs
     ml.cli docker stop                    # stop + remove container
 
-
+\b
   Lightweight Transformers vision serving:
     ml.cli vision serve pp-ocrv6-medium-det --port 8103
     ml.cli vision status
     ml.cli vision stop
 
-
+\b
   Single-port model router:
     ml.cli router serve --port 8000
     ml.cli router status
     ml.cli router logs -f
 
-
+\b
   DSpark safety proxy:
     ml.cli dspark-proxy serve              # authenticated allow-list on :8000
     ml.cli dspark-proxy status
@@ -69,6 +69,13 @@ COMMON WORKFLOWS
     ml.cli dspark build                   # pull/verify pinned Anemll image
     ml.cli dspark download                # download and mirror model weights
     ml.cli dspark start                   # worker-first TP=2 launch
+
+\b
+  One-node DSpark serving (DeepSeek V4 Flash 0731 EXL3):
+    ml.cli dspark-one setup               # pin/configure the MiaAI TP=1 recipe
+    ml.cli dspark-one build               # pull the digest-pinned image
+    ml.cli dspark-one download            # download + coalesce the EXL3 weights
+    ml.cli dspark-one start               # private :8888 + authenticated :8000
 
 \b
   Box diagnostic:
@@ -99,13 +106,14 @@ def cli():
     """ml-compute — OpenAI-compatible local and two-node inference.
 
     \b
-    Six serving backends behind a single CLI:
+    Seven serving backends behind a single CLI:
       • vLLM      pip-installed Python process, safetensors →  `ml.cli serve <alias>`
       • llama.cpp local llama-server process, GGUF          →  `ml.cli serve llama <id>`
       • Docker    dedicated vLLM image from model registry  →  `ml.cli docker serve <alias>`
       • Vision    Transformers object detection             →  `ml.cli vision serve <alias>`
       • NIM       NVIDIA TensorRT-LLM container, Docker      →  `ml.cli nim serve <alias>`
       • DSpark    patched Docker vLLM, two GB10 nodes, TP=2  →  `ml.cli dspark <action>`
+      • DSpark One EXL3/SparkInfer, one GB10 node, TP=1      →  `ml.cli dspark-one <action>`
 
     Language-model backends expose an OpenAI-compatible /v1 API. The vision
     backend exposes /v1/models and /v1/text/detections. Run `ml.cli info` to
@@ -504,15 +512,15 @@ def docker_logs(follow: bool, lines: int):
 # ---------------------------------------------------------------------------
 
 VISION_EPILOG = """
-
+\b
 QUICKSTART
 
-
+\b
   Start PP-OCRv6 text detection beside the two vLLM services:
     ml.cli vision serve pp-ocrv6-medium-det --port 8103
     ml.cli vision logs -f
 
-
+\b
   Send raw PNG/JPEG bytes (this returns regions, not recognized text):
     curl --data-binary @page.png -H 'Content-Type: image/png' \\
       http://localhost:8103/v1/text/detections
@@ -588,10 +596,10 @@ def vision_logs(follow: bool, lines: int):
 # ---------------------------------------------------------------------------
 
 ROUTER_EPILOG = """
-
+\b
 ROUTING
 
-
+\b
   JSON OpenAI requests are routed by their `model` field. Raw-image PP-OCR
   requests are routed by /v1/text/detections or an explicit X-Model header.
   A shared concurrency limit serializes inference across all backends.
@@ -990,6 +998,54 @@ def dspark_cmd(action: str):
     script = Path(__file__).resolve().parent.parent / "scripts" / "DS4-Flash-DSpark.sh"
     if not script.is_file():
         raise click.ClickException(f"DSpark recipe not found: {script}")
+    result = subprocess.run([str(script), action], check=False)
+    raise click.exceptions.Exit(result.returncode)
+
+
+# ---------------------------------------------------------------------------
+# DSpark One — EXL3/ExLlamaV3 TP1 recipe for one dedicated Spark
+# ---------------------------------------------------------------------------
+
+DSPARK_ONE_ACTIONS = [
+    "bootstrap", "configure", "check", "setup", "build", "download",
+    "gpu-check", "start", "status", "memory", "smoke", "logs", "stop",
+    "update", "all", "path", "help",
+]
+
+
+@cli.command("dspark-one")
+@click.argument(
+    "action",
+    required=False,
+    default="help",
+    type=click.Choice(DSPARK_ONE_ACTIONS, case_sensitive=False),
+)
+def dspark_one_cmd(action: str):
+    """Manage DeepSeek V4 Flash on one dedicated DGX Spark.
+
+    \b
+    This is MiaAI-Lab's TP=1, 3.0-bpw EXL3/SparkInfer recipe. It is separate
+    from `dspark`, which remains the two-node TP=2 Anemll deployment. The raw
+    API binds to loopback :8888; the authenticated safety proxy owns :8000.
+
+    \b
+    Typical sequence:
+      ml.cli dspark-one setup
+      ml.cli dspark-one build
+      ml.cli dspark-one download
+      ml.cli dspark-one gpu-check
+      ml.cli dspark-one start
+      ml.cli dspark-one smoke
+
+    Run `ml.cli dspark-one help` for the memory and context constraints.
+    """
+    script = (
+        Path(__file__).resolve().parent.parent
+        / "scripts"
+        / "DS4-Flash-One-DSpark.sh"
+    )
+    if not script.is_file():
+        raise click.ClickException(f"One-Spark recipe not found: {script}")
     result = subprocess.run([str(script), action], check=False)
     raise click.exceptions.Exit(result.returncode)
 

@@ -4,7 +4,7 @@ Local LLM inference and fine-tuning on your own hardware. Built for the **NVIDIA
 (GB10)** — Grace CPU + Blackwell GPU with 128 GB unified memory — and works on any local
 box with an NVIDIA GPU.
 
-One CLI, six serving backends. Language models use the OpenAI-compatible `/v1`
+One CLI, seven serving backends. Language models use the OpenAI-compatible `/v1`
 API; lightweight vision detectors use a small task-specific `/v1` API:
 
 | Backend | Runs | Weights | Command |
@@ -15,6 +15,7 @@ API; lightweight vision detectors use a small task-specific `/v1` API:
 | **Transformers vision** | local Python process | safetensors object detectors | `vision serve <alias>` |
 | **NIM** | Docker container (TensorRT-LLM) | NVIDIA-packaged | `nim serve <alias>` |
 | **DSpark cluster** | MiaAI/Anemll vLLM on two GB10 nodes | DeepSeek V4 Flash 0731 | `dspark <action>` |
+| **DSpark One** | MiaAI SparkInfer/EXL3 on one dedicated GB10 | DeepSeek V4 Flash 0731 | `dspark-one <action>` |
 
 An optional streaming router exposes several resident services through one
 public port, selects the backend from the request's `model` field, and can
@@ -330,6 +331,41 @@ VLLM_BASE_URL=http://127.0.0.1:8888 \
 BENCH_LABEL=miaai-512k scripts/bench_dspark_ab.sh full
 ```
 
+### DSpark One (one dedicated GB10 system)
+
+The third-Spark path wraps
+[MiaAI-Lab's one-DGX-Spark recipe](https://github.com/MiaAI-Lab/DeepSeek-v4-Flash-One-DGX-Spark)
+at reviewed revision `fdcd538fbf95fb15b2d6850db9613d22b2c889b8`. It uses a
+digest-pinned SparkInfer/ExLlamaV3 runtime and the 3.0-bpw EXL3 checkpoint with
+TP=1. This is a separate lifecycle from `dspark`; it does not contact or
+reconfigure the two-node cluster.
+
+Run these commands on the dedicated third Spark:
+
+```bash
+cd ~/workspace/ml-compute
+source venv/bin/activate
+
+# First use: pin upstream, preflight, pull, download/coalesce ~107 GB, GPU test.
+scripts/start-DS4-Flash-One-DSpark.sh --first-run
+
+# Later boots:
+scripts/start-DS4-Flash-One-DSpark.sh
+
+python3 -m ml.cli dspark-one status
+python3 -m ml.cli dspark-one memory
+python3 -m ml.cli dspark-one smoke
+python3 -m ml.cli dspark-one logs
+```
+
+The checked-in profile is intentionally dedicated-host: 384K context, one
+sequence, `MAX_NUM_BATCHED_TOKENS=8224`, native 432-byte NVFP4 KV records, and
+94% GPU/UMA utilization. Cold launch requires at least 114.3 GiB
+`MemAvailable`, so stop other models and the Harness first. The raw,
+unauthenticated server binds only to `127.0.0.1:8888`; the existing
+authenticated allow-list proxy is the public API on port 8000. If using
+Tailscale Funnel, target port 8000, never 8888.
+
 ### Call it
 
 ```bash
@@ -355,6 +391,7 @@ python3 -m ml.cli docker stop                 # dedicated vLLM image lifecycle
 python3 -m ml.cli vision stop                 # Transformers vision lifecycle
 python3 -m ml.cli nim stop                    # NIM has its own lifecycle
 python3 -m ml.cli dspark stop                 # stops both cluster nodes
+python3 -m ml.cli dspark-one stop             # stops the independent one-Spark service
 ```
 
 Backends bind port 8000 by default, so ordinary profiles still need to be stopped before
@@ -398,6 +435,7 @@ No code changes — register a model with provider `openai`, the base URL above,
 | Model requires a dedicated/custom vLLM image | **Docker vLLM** |
 | Want NVIDIA-tuned TensorRT-LLM kernels and NVFP4 on Blackwell | **NIM** |
 | DeepSeek V4 Flash 0731 across two linked GB10 nodes | **DSpark cluster** |
+| DeepSeek V4 Flash 0731 on one dedicated GB10 at 384K | **DSpark One** |
 | Fine-tuning | none — stop the server, run `Makefile.gb10` |
 
 On GB10, vLLM is the day-to-day workhorse (LoRA adapters and the registry live there).
@@ -436,6 +474,7 @@ tuning. A representative slice of what's registered:
 | `gemma4-31b-it-nvfp4` | NVIDIA NVFP4, 64k text profile for DGX Spark — **Blackwell only** |
 | `gemma4-31b-it-fp8` | 31B via runtime FP8 quant — GB10-sized |
 | `qwen2.5-coder-32b` (llama.cpp) | Q8_0 GGUF with `--jinja` — real tool calling for agentic coders |
+| `deepseek-v4-flash-0731-dspark-one` | One-Spark TP=1 EXL3 recipe, 384K single-request profile |
 
 Adding an entry:
 
@@ -804,10 +843,14 @@ ml-compute/
 │   ├── dspark_proxy.yaml       private vLLM → safe public endpoint
 │   ├── datasets.yaml           Fine-tuning dataset aliases
 │   └── apis.yaml               Hosted-provider model lists (teacher models)
+├── config/
+│   └── dspark-one-deepseek-v4-flash-0731.env  one-Spark 384K profile
 ├── Makefile.gb10               LoRA fine-tuning on DGX Spark (bf16, HF+PEFT+TRL)
 ├── Makefile.distill            Distillation data pipeline (+ x86 QLoRA train)
 ├── Makefile.qwen{,9b}          QLoRA recipes for a 32 GB RTX PRO 4500 box
 ├── scripts/
+│   ├── DS4-Flash-One-DSpark.sh     one-Spark lifecycle + safety checks
+│   ├── start-DS4-Flash-One-DSpark.sh first-run / normal-start wrapper
 │   ├── train_gemma4_12b_gb10.sh   Detached (setsid+nohup) 12B run
 │   ├── train_gemma4_gb10.sh       31B run — wraps Makefile.gb10, foreground
 │   └── train_status.sh            Progress / loss / errors for a detached run
