@@ -854,9 +854,9 @@ models:
     max_model_len: 524288
     max_num_seqs: 4
     max_num_batched_tokens: 4096
-    # The head needs 0.72 for a 512K KV pool; the Harness worker stays at 0.70.
-    gpu_memory_utilization: 0.72
-    worker_gpu_memory_utilization: 0.70
+    # Observed minimums with 512K KV margin and the 24 GiB worker target.
+    gpu_memory_utilization: 0.75
+    worker_gpu_memory_utilization: 0.73
     kv_cache_dtype: nvfp4_ds_mla
     speculative_method: dspark
     speculative_tokens: 5

@@ -91,8 +91,8 @@ Configuration environment variables:
     MAX_MODEL_LEN            Profile default 524288 (512K)
     MAX_NUM_SEQS             Profile default 4
     MAX_NUM_BATCHED_TOKENS   Profile default 4096
-    GPU_MEMORY_UTILIZATION_TEXT  Head profile default 0.72 (required for 512K)
-    WORKER_GPU_MEMORY_UTILIZATION  Worker profile default 0.70 (Harness node)
+    GPU_MEMORY_UTILIZATION_TEXT  Head profile default 0.75 (512K KV margin)
+    WORKER_GPU_MEMORY_UTILIZATION  Worker default 0.73 (24 GiB coexistence)
     MTP_NUM_TOKENS           Default and recommended value: 5
     WORKER_AVAILABLE_TARGET_GIB  Required MemAvailable after model start (24)
     DSPARK_VLLM_IMAGE        Immutable Anemll image reference
@@ -256,8 +256,8 @@ configure() {
   set_env_value MAX_NUM_SEQS "$(profile_value MAX_NUM_SEQS 4)"
   set_env_value MAX_NUM_BATCHED_TOKENS "$(profile_value MAX_NUM_BATCHED_TOKENS 4096)"
   set_env_value LONG_PREFILL_TOKEN_THRESHOLD "$(profile_value LONG_PREFILL_TOKEN_THRESHOLD 1024)"
-  set_env_value GPU_MEMORY_UTILIZATION_TEXT "$(profile_value GPU_MEMORY_UTILIZATION_TEXT 0.72)"
-  set_env_value WORKER_GPU_MEMORY_UTILIZATION "$(profile_value WORKER_GPU_MEMORY_UTILIZATION 0.70)"
+  set_env_value GPU_MEMORY_UTILIZATION_TEXT "$(profile_value GPU_MEMORY_UTILIZATION_TEXT 0.75)"
+  set_env_value WORKER_GPU_MEMORY_UTILIZATION "$(profile_value WORKER_GPU_MEMORY_UTILIZATION 0.73)"
   set_env_value MTP_NUM_TOKENS "$(profile_value MTP_NUM_TOKENS 5)"
   set_env_value DEFAULT_THINKING "$(profile_value DEFAULT_THINKING low)"
   set_env_value DSPARK_VLLM_IMAGE "$(profile_value DSPARK_VLLM_IMAGE "${IMAGE_DEFAULT}")"
@@ -316,7 +316,7 @@ configure() {
 
   prepare_start_overlay
   log "Configured ${ENV_FILE}"
-  log "Profile: official 0731@${REVISION_DEFAULT:0:12}, 512K, NVFP4 KV, head 0.72 / worker 0.70 memory, low thinking, TP=2"
+  log "Profile: official 0731@${REVISION_DEFAULT:0:12}, 512K, NVFP4 KV, head 0.75 / worker 0.73 memory, low thinking, TP=2"
   log "Ports: raw vLLM $(env_value VLLM_HOST):$(env_value VLLM_PORT); authenticated allow-list proxy $(profile_value DSPARK_PROXY_HOST 0.0.0.0):$(profile_value DSPARK_PROXY_PORT 8000)"
 }
 
@@ -536,10 +536,10 @@ check_config() {
     || warn "MAX_MODEL_LEN differs from the 512K coexistence profile"
   [[ "$(env_value MAX_NUM_SEQS)" == "4" ]] \
     || warn "MAX_NUM_SEQS differs from the A/B benchmark profile (4)"
-  [[ "$(env_value GPU_MEMORY_UTILIZATION_TEXT)" == "0.72" ]] \
-    || warn "GPU_MEMORY_UTILIZATION_TEXT differs from the verified 512K head profile (0.72)"
-  [[ "$(env_value WORKER_GPU_MEMORY_UTILIZATION)" == "0.70" ]] \
-    || warn "WORKER_GPU_MEMORY_UTILIZATION differs from the Harness profile (0.70)"
+  [[ "$(env_value GPU_MEMORY_UTILIZATION_TEXT)" == "0.75" ]] \
+    || warn "GPU_MEMORY_UTILIZATION_TEXT differs from the 512K head profile (0.75)"
+  [[ "$(env_value WORKER_GPU_MEMORY_UTILIZATION)" == "0.73" ]] \
+    || warn "WORKER_GPU_MEMORY_UTILIZATION differs from the Harness coexistence profile (0.73)"
   [[ "$(env_value DEFAULT_THINKING)" =~ ^(off|low)$ ]] \
     || warn "DEFAULT_THINKING is not low/off; coding requests will spend more tokens by default"
 

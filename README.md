@@ -229,8 +229,8 @@ one local container and cannot orchestrate the two-node 0731/DSpark profile. The
 path wraps [MiaAI-Lab's maintained recipe](https://github.com/MiaAI-Lab/DeepSeek-v4-Flash-DSpark-2x-DGX-Spark),
 using its current hotfix set over the immutable Anemll `0.1.1` image digest and the pinned
 official 0731 model revision. The committed profile uses a 512K request ceiling, NVFP4 MLA
-KV, TP=2, MTP=5, low reasoning by default, and asymmetric memory utilization: 0.72 on
-the NVIDIA/head rank and 0.70 on the Lenovo/Harness rank.
+KV, TP=2, MTP=5, low reasoning by default, and asymmetric memory utilization: 0.75 on
+the NVIDIA/head rank and 0.73 on the Lenovo/Harness rank.
 
 ```bash
 python3 -m ml.cli dspark network     # QSFP/RoCE state and setup guidance
@@ -255,16 +255,19 @@ After launch, `python3 -m ml.cli dspark memory` verifies that the worker has at 
 24 GiB `MemAvailable` before the Harness starts. The generated upstream checkout and
 its `.env.dspark` live under ignored `data/dspark/` by default.
 
-The first Anemll launch at 0.70 showed the asymmetry directly: the head had 2.54 GiB of
-KV cache while 512K required 3.78 GiB; the worker already had 6.3 GiB. A version-checked
-launcher overlay therefore raises only the head to 0.72 and leaves the Harness worker at
-0.70. It is regenerated from the pristine pinned upstream launcher during configure and
-preflight, and fails closed if MiaAI changes the patched commands. Startup then reads
-vLLM's live block count and refuses to expose the proxy unless at least 524,288 tokens
-fit. A single full 512K request is the supported worst case; do not assume two full-window
-requests fit. `MAX_NUM_SEQS=4` remains appropriate for shorter concurrent coding-agent
-turns. After launch, `dspark memory` must report at least 24 GiB available on the Harness
-worker (16 GiB Harness cap plus 8 GiB operating headroom).
+The first Anemll launch at 0.70 gave the head 2.54 GiB of KV cache while 512K required
+3.78 GiB. A subsequent 0.72/0.70 attempt profiled only 1.23 GiB on both ranks. The
+profile now uses 0.75/0.73: three extra
+percentage points per rank supply roughly 3.6 GiB more allocation than that attempt,
+while the worker's 0.73 target leaves approximately 24 GiB outside vLLM for the Harness
+and OS. A version-checked launcher overlay applies the two values independently. It is
+regenerated from the pristine upstream launcher during configure and preflight, and fails
+closed if MiaAI changes the patched commands. Startup then reads vLLM's live block count
+and refuses to expose the proxy unless at least 524,288 tokens fit. A single full 512K
+request is the supported worst case; do not assume two full-window requests fit.
+`MAX_NUM_SEQS=4` remains appropriate for shorter concurrent coding-agent turns. After
+launch, `dspark memory` must report at least 24 GiB available on the Harness worker
+(16 GiB Harness cap plus 8 GiB operating headroom).
 
 The launcher runs `gpu-check` automatically before it starts either TP rank. If a
 driver update left Docker's NVIDIA CDI description stale, refresh it on the node
