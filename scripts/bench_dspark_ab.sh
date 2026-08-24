@@ -43,8 +43,30 @@ RUN_ID="${LABEL}-${STAMP}"
 RESULT_DIR="${RESULT_DIR:-${PROJECT_ROOT}/data/benchmarks/dspark/${RUN_ID}}"
 mkdir -p "${RESULT_DIR}"
 
+capture_memory_snapshot() {
+  local destination="$1"
+  local -a statuses
+
+  # `ml.cli dspark memory` intentionally returns 1 when the Harness coexistence
+  # target is missed. That is benchmark metadata, not a reason to skip the
+  # throughput run. Preserve a real tee/write failure while recording and
+  # continuing past the expected memory warning.
+  set +e
+  "${PYTHON}" -m ml.cli dspark memory 2>&1 | tee "${destination}"
+  statuses=("${PIPESTATUS[@]}")
+  set -e
+  if (( statuses[1] != 0 )); then
+    printf 'Could not write memory snapshot: %s\n' "${destination}" >&2
+    return "${statuses[1]}"
+  fi
+  if (( statuses[0] != 0 )); then
+    printf '[dspark] NOTE: memory target missed; throughput benchmark will continue\n' \
+      | tee -a "${destination}"
+  fi
+}
+
 printf 'DSpark A/B label: %s\nResults: %s\n' "${LABEL}" "${RESULT_DIR}"
-"${PYTHON}" -m ml.cli dspark memory | tee "${RESULT_DIR}/memory-before.txt"
+capture_memory_snapshot "${RESULT_DIR}/memory-before.txt"
 
 VLLM_BASE_URL="${BASE_URL}" \
 VLLM_MODEL="${MODEL}" \
@@ -125,5 +147,5 @@ if [[ "${RUN_LONG}" == 1 ]]; then
   scripts/bench_vllm.sh standard
 fi
 
-"${PYTHON}" -m ml.cli dspark memory | tee "${RESULT_DIR}/memory-after.txt"
+capture_memory_snapshot "${RESULT_DIR}/memory-after.txt"
 printf 'DSpark A/B benchmark complete: %s\n' "${RESULT_DIR}"
