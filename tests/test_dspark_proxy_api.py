@@ -53,7 +53,8 @@ class DSparkProxyApiTests(unittest.TestCase):
         profile = get_models()["deepseek-v4-flash-0731-dspark"]
         self.assertEqual(profile["max_model_len"], 524288)
         self.assertEqual(profile["max_num_seqs"], 4)
-        self.assertEqual(profile["gpu_memory_utilization"], 0.70)
+        self.assertEqual(profile["gpu_memory_utilization"], 0.72)
+        self.assertEqual(profile["worker_gpu_memory_utilization"], 0.70)
         self.assertEqual(profile["raw_api_url"], "http://127.0.0.1:8888")
         self.assertEqual(profile["proxy_bind"], "0.0.0.0:8000")
         self.assertEqual(profile["proxy_url"], "http://127.0.0.1:8000")

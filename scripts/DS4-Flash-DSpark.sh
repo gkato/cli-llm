@@ -19,6 +19,8 @@ ENV_FILE="${DSPARK_ENV_FILE:-${RECIPE_DIR}/.env.dspark}"
 CONFIG_FILE="${DSPARK_CONFIG_FILE:-${PROJECT_ROOT}/config/dspark-spark4e89-thinkstationpgx.env}"
 PROJECT_ENV_FILE="${DSPARK_PROJECT_ENV_FILE:-${PROJECT_ROOT}/.env.local}"
 LEGACY_RECIPE_DIR="${DSPARK_LEGACY_RECIPE_DIR:-${PROJECT_ROOT}/data/dspark/deepseek-v4-flash-0731}"
+UPSTREAM_START_SCRIPT="start-deepseek-v4-flash-dspark.sh"
+START_OVERLAY_SCRIPT="start-deepseek-v4-flash-dspark.ml-compute.sh"
 
 # Defaults for this installation. Override any of these in the command environment.
 WORKER_HOST_DEFAULT="totalpass@192.168.177.11"
@@ -89,7 +91,8 @@ Configuration environment variables:
     MAX_MODEL_LEN            Profile default 524288 (512K)
     MAX_NUM_SEQS             Profile default 4
     MAX_NUM_BATCHED_TOKENS   Profile default 4096
-    GPU_MEMORY_UTILIZATION_TEXT  Profile default 0.70 on both TP ranks
+    GPU_MEMORY_UTILIZATION_TEXT  Head profile default 0.72 (required for 512K)
+    WORKER_GPU_MEMORY_UTILIZATION  Worker profile default 0.70 (Harness node)
     MTP_NUM_TOKENS           Default and recommended value: 5
     WORKER_AVAILABLE_TARGET_GIB  Required MemAvailable after model start (24)
     DSPARK_VLLM_IMAGE        Immutable Anemll image reference
@@ -215,6 +218,16 @@ bootstrap() {
   fi
 }
 
+prepare_start_overlay() {
+  require_checkout
+  local source="${RECIPE_DIR}/${UPSTREAM_START_SCRIPT}"
+  local destination="${RECIPE_DIR}/${START_OVERLAY_SCRIPT}"
+  [[ -f "${source}" ]] || die "Upstream launcher is missing: ${source}"
+  "$(project_python)" "${PROJECT_ROOT}/scripts/patch_miaai_worker_util.py" \
+    "${source}" "${destination}" \
+    || die "Could not build the version-checked MiaAI launcher overlay"
+}
+
 configure() {
   require_checkout
   require_env_file
@@ -243,7 +256,8 @@ configure() {
   set_env_value MAX_NUM_SEQS "$(profile_value MAX_NUM_SEQS 4)"
   set_env_value MAX_NUM_BATCHED_TOKENS "$(profile_value MAX_NUM_BATCHED_TOKENS 4096)"
   set_env_value LONG_PREFILL_TOKEN_THRESHOLD "$(profile_value LONG_PREFILL_TOKEN_THRESHOLD 1024)"
-  set_env_value GPU_MEMORY_UTILIZATION_TEXT "$(profile_value GPU_MEMORY_UTILIZATION_TEXT 0.70)"
+  set_env_value GPU_MEMORY_UTILIZATION_TEXT "$(profile_value GPU_MEMORY_UTILIZATION_TEXT 0.72)"
+  set_env_value WORKER_GPU_MEMORY_UTILIZATION "$(profile_value WORKER_GPU_MEMORY_UTILIZATION 0.70)"
   set_env_value MTP_NUM_TOKENS "$(profile_value MTP_NUM_TOKENS 5)"
   set_env_value DEFAULT_THINKING "$(profile_value DEFAULT_THINKING low)"
   set_env_value DSPARK_VLLM_IMAGE "$(profile_value DSPARK_VLLM_IMAGE "${IMAGE_DEFAULT}")"
@@ -300,8 +314,9 @@ configure() {
     warn "Passwordless SSH to ${wh} is not ready; worker-local paths were not auto-discovered"
   fi
 
+  prepare_start_overlay
   log "Configured ${ENV_FILE}"
-  log "Profile: official 0731@${REVISION_DEFAULT:0:12}, 512K, NVFP4 KV, 0.70 memory, low thinking, TP=2"
+  log "Profile: official 0731@${REVISION_DEFAULT:0:12}, 512K, NVFP4 KV, head 0.72 / worker 0.70 memory, low thinking, TP=2"
   log "Ports: raw vLLM $(env_value VLLM_HOST):$(env_value VLLM_PORT); authenticated allow-list proxy $(profile_value DSPARK_PROXY_HOST 0.0.0.0):$(profile_value DSPARK_PROXY_PORT 8000)"
 }
 
@@ -495,6 +510,7 @@ check_remote() {
 check_config() {
   require_checkout
   require_env_file
+  prepare_start_overlay
   for key in WORKER_HOST WORKER_SCRIPT_DIR MASTER_ADDR VLLM_HOST_IP \
              WORKER_VLLM_HOST_IP NCCL_IB_HCA NCCL_SOCKET_IFNAME HF_CACHE \
              WORKER_HF_CACHE DSPARK_MODEL_OFFICIAL DSPARK_REVISION \
@@ -520,8 +536,10 @@ check_config() {
     || warn "MAX_MODEL_LEN differs from the 512K coexistence profile"
   [[ "$(env_value MAX_NUM_SEQS)" == "4" ]] \
     || warn "MAX_NUM_SEQS differs from the A/B benchmark profile (4)"
-  [[ "$(env_value GPU_MEMORY_UTILIZATION_TEXT)" == "0.70" ]] \
-    || warn "GPU_MEMORY_UTILIZATION_TEXT differs from the conservative Harness profile (0.70)"
+  [[ "$(env_value GPU_MEMORY_UTILIZATION_TEXT)" == "0.72" ]] \
+    || warn "GPU_MEMORY_UTILIZATION_TEXT differs from the verified 512K head profile (0.72)"
+  [[ "$(env_value WORKER_GPU_MEMORY_UTILIZATION)" == "0.70" ]] \
+    || warn "WORKER_GPU_MEMORY_UTILIZATION differs from the Harness profile (0.70)"
   [[ "$(env_value DEFAULT_THINKING)" =~ ^(off|low)$ ]] \
     || warn "DEFAULT_THINKING is not low/off; coding requests will spend more tokens by default"
 
@@ -581,7 +599,7 @@ start_cluster() {
   fi
   ensure_gpus_free
   check_gpu_containers
-  run_upstream_with_api start-deepseek-v4-flash-dspark.sh
+  run_upstream_with_api "${START_OVERLAY_SCRIPT}"
   if ! check_kv_capacity; then
     warn "Stopping the new ranks because the configured 512K capacity was not verified"
     run_upstream_with_api stop-deepseek-v4-flash-dspark.sh || true

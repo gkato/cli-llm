@@ -25,6 +25,16 @@ class DSparkScriptTests(unittest.TestCase):
             start_cluster.index("legacy_stop"),
         )
 
+    def test_start_uses_version_checked_asymmetric_memory_overlay(self):
+        script = (
+            Path(__file__).resolve().parents[1] / "scripts" / "DS4-Flash-DSpark.sh"
+        ).read_text(encoding="utf-8")
+        start_cluster = script.split("start_cluster() {", 1)[1].split("\n}", 1)[0]
+
+        self.assertIn('run_upstream_with_api "${START_OVERLAY_SCRIPT}"', start_cluster)
+        self.assertIn("prepare_start_overlay", script)
+        self.assertIn("WORKER_GPU_MEMORY_UTILIZATION", script)
+
 
 if __name__ == "__main__":
     unittest.main()
