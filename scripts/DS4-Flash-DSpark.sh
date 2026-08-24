@@ -576,6 +576,7 @@ start_cluster() {
   # Keep the old endpoint alive through every read-only validation. Cut over
   # only once the new checkout, profile, fabric, cache, and image are ready.
   if [[ "${DSPARK_CUTOVER_LEGACY:-0}" == 1 ]]; then
+    check_cutover_artifacts
     legacy_stop
   fi
   ensure_gpus_free
@@ -590,6 +591,47 @@ start_cluster() {
     warn "The model is running, but the Harness memory target was not met"
   fi
   start_proxy
+}
+
+check_cutover_artifacts() {
+  local image wh model revision head_cache worker_cache hub_dir failed=0
+  image="$(env_value DSPARK_VLLM_IMAGE)"
+  wh="$(worker_host)"
+  model="$(env_value DSPARK_MODEL_OFFICIAL)"
+  revision="$(env_value DSPARK_REVISION)"
+  head_cache="$(env_value HF_CACHE)"
+  worker_cache="$(env_value WORKER_HF_CACHE)"
+  hub_dir="models--${model//\//--}"
+
+  if docker image inspect "${image}" >/dev/null 2>&1; then
+    log "cutover image present on head"
+  else
+    warn "cutover image absent on head: ${image}"
+    failed=1
+  fi
+  if ssh "${wh}" "docker image inspect $(printf '%q' "${image}") >/dev/null 2>&1"; then
+    log "cutover image present on worker"
+  else
+    warn "cutover image absent on worker ${wh}: ${image}"
+    failed=1
+  fi
+
+  if [[ -d "${head_cache}/hub/${hub_dir}/snapshots/${revision}" ]]; then
+    log "pinned model snapshot present on head"
+  else
+    warn "pinned model snapshot absent on head: ${model}@${revision}"
+    failed=1
+  fi
+  if ssh "${wh}" "test -d $(printf '%q' "${worker_cache}/hub/${hub_dir}/snapshots/${revision}")"; then
+    log "pinned model snapshot present on worker"
+  else
+    warn "pinned model snapshot absent on worker ${wh}: ${model}@${revision}"
+    failed=1
+  fi
+
+  if [[ "${failed}" != 0 ]]; then
+    die "Cutover artifacts are incomplete; run dspark build and dspark download before stopping the legacy service"
+  fi
 }
 
 check_kv_capacity() {
