@@ -609,6 +609,10 @@ start_cluster() {
     warn "The model is running, but the Harness memory target was not met"
   fi
   start_proxy
+  if ! proxy_smoke; then
+    stop_proxy || true
+    die "DSpark safety proxy failed its authenticated route checks; model remains private on 127.0.0.1:8888"
+  fi
 }
 
 check_cutover_artifacts() {

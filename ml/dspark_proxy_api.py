@@ -7,6 +7,7 @@ import asyncio
 import os
 import re
 import secrets
+from collections.abc import Iterable
 
 from ml.config import get_dspark_proxy_config
 
@@ -35,6 +36,13 @@ _HOP_BY_HOP = {
     "upgrade",
     "content-length",
     "host",
+}
+_REPLACED_REQUEST_HEADERS = _HOP_BY_HOP | {
+    "authorization",
+    "forwarded",
+    "x-forwarded-for",
+    "x-forwarded-host",
+    "x-forwarded-proto",
 }
 
 
@@ -74,6 +82,25 @@ def is_authorized(authorization: str | None, api_key: str) -> bool:
         and scheme.lower() == "bearer"
         and secrets.compare_digest(supplied, api_key)
     )
+
+
+def build_upstream_headers(
+    incoming: Iterable[tuple[str, str]],
+    api_key: str,
+    client_host: str | None,
+    scheme: str,
+) -> dict[str, str]:
+    """Replace caller-controlled auth and forwarding metadata exactly once."""
+    headers = {
+        key: value
+        for key, value in incoming
+        if key.lower() not in _REPLACED_REQUEST_HEADERS
+    }
+    headers["Authorization"] = f"Bearer {api_key}"
+    if client_host:
+        headers["X-Forwarded-For"] = client_host
+    headers["X-Forwarded-Proto"] = scheme
+    return headers
 
 
 def main() -> None:
@@ -159,15 +186,12 @@ def main() -> None:
         if len(body) > max_request_bytes:
             raise HTTPException(status_code=413, detail="Request body is too large")
 
-        headers = {
-            key: value
-            for key, value in request.headers.items()
-            if key.lower() not in _HOP_BY_HOP
-        }
-        headers["Authorization"] = f"Bearer {api_key}"
-        if request.client:
-            headers["X-Forwarded-For"] = request.client.host
-        headers["X-Forwarded-Proto"] = request.url.scheme
+        headers = build_upstream_headers(
+            request.headers.items(),
+            api_key,
+            request.client.host if request.client else None,
+            request.url.scheme,
+        )
 
         await inference_slots.acquire()
         try:

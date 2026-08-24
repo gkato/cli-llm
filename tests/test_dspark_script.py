@@ -35,6 +35,14 @@ class DSparkScriptTests(unittest.TestCase):
         self.assertIn("prepare_start_overlay", script)
         self.assertIn("WORKER_GPU_MEMORY_UTILIZATION", script)
 
+    def test_start_smokes_proxy_after_launch(self):
+        script = (
+            Path(__file__).resolve().parents[1] / "scripts" / "DS4-Flash-DSpark.sh"
+        ).read_text(encoding="utf-8")
+        start_cluster = script.split("start_cluster() {", 1)[1].split("\n}", 1)[0]
+
+        self.assertLess(start_cluster.index("start_proxy"), start_cluster.index("proxy_smoke"))
+
 
 if __name__ == "__main__":
     unittest.main()

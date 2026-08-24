@@ -1,7 +1,14 @@
 import unittest
 
+import httpx
+
 from ml.config import get_dspark_proxy_config, get_models
-from ml.dspark_proxy_api import is_allowed_route, is_authorized, validate_config
+from ml.dspark_proxy_api import (
+    build_upstream_headers,
+    is_allowed_route,
+    is_authorized,
+    validate_config,
+)
 
 
 class DSparkProxyApiTests(unittest.TestCase):
@@ -42,6 +49,27 @@ class DSparkProxyApiTests(unittest.TestCase):
         self.assertFalse(is_authorized("Bearer wrong", "secret"))
         self.assertFalse(is_authorized("Basic secret", "secret"))
         self.assertFalse(is_authorized(None, "secret"))
+
+    def test_replaces_caller_auth_and_forwarding_headers_without_duplicates(self):
+        headers = build_upstream_headers(
+            (
+                ("authorization", "Bearer caller"),
+                ("x-forwarded-for", "spoofed"),
+                ("x-forwarded-proto", "http"),
+                ("accept", "application/json"),
+            ),
+            "internal",
+            "127.0.0.1",
+            "https",
+        )
+        request = httpx.Request("GET", "http://upstream/v1/models", headers=headers)
+
+        self.assertEqual(
+            request.headers.get_list("authorization"), ["Bearer internal"]
+        )
+        self.assertEqual(request.headers.get_list("x-forwarded-for"), ["127.0.0.1"])
+        self.assertEqual(request.headers.get_list("x-forwarded-proto"), ["https"])
+        self.assertEqual(request.headers["accept"], "application/json")
 
     def test_registry_upstream_is_loopback_and_ports_are_split(self):
         config = get_dspark_proxy_config()
