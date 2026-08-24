@@ -103,6 +103,23 @@ def build_upstream_headers(
     return headers
 
 
+def _bind_proxy_route_annotations(route, request_type):
+    """Bind lazy FastAPI types before route signature inspection.
+
+    ``Request`` is intentionally imported inside ``main`` so the configuration
+    helpers remain usable without serving dependencies. With postponed
+    annotations, a nested handler would otherwise expose the unresolved string
+    ``"Request"`` to some FastAPI versions, which turns it into a required
+    client parameter and makes every request return 422.
+    """
+    route.__annotations__ = {
+        "path": str,
+        "request": request_type,
+        "authorization": str | None,
+    }
+    return route
+
+
 def main() -> None:
     import httpx
     import uvicorn
@@ -168,13 +185,9 @@ def main() -> None:
             headers={"X-Content-Type-Options": "nosniff"},
         )
 
-    @app.api_route(
-        "/{path:path}",
-        methods=["GET", "POST", "PUT", "PATCH", "DELETE"],
-    )
     async def proxy(
         path: str,
-        request: Request,
+        request,
         authorization: str | None = Header(default=None),
     ):
         authorize(authorization)
@@ -232,6 +245,12 @@ def main() -> None:
             headers=response_headers,
             background=BackgroundTask(close_upstream),
         )
+
+    _bind_proxy_route_annotations(proxy, Request)
+    app.api_route(
+        "/{path:path}",
+        methods=["GET", "POST", "PUT", "PATCH", "DELETE"],
+    )(proxy)
 
     uvicorn.run(
         app,

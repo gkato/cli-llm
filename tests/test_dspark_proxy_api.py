@@ -4,6 +4,7 @@ import httpx
 
 from ml.config import get_dspark_proxy_config, get_models
 from ml.dspark_proxy_api import (
+    _bind_proxy_route_annotations,
     build_upstream_headers,
     is_allowed_route,
     is_authorized,
@@ -12,6 +13,20 @@ from ml.dspark_proxy_api import (
 
 
 class DSparkProxyApiTests(unittest.TestCase):
+    def test_binds_runtime_request_type_before_fastapi_inspects_route(self):
+        class RequestMarker:
+            pass
+
+        def route(path, request, authorization=None):
+            pass
+
+        bound = _bind_proxy_route_annotations(route, RequestMarker)
+
+        self.assertIs(bound, route)
+        self.assertIs(route.__annotations__["path"], str)
+        self.assertIs(route.__annotations__["request"], RequestMarker)
+        self.assertEqual(route.__annotations__["authorization"], str | None)
+
     def test_allows_only_reviewed_openai_routes(self):
         allowed = [
             ("GET", "/v1/models"),
