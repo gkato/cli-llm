@@ -68,13 +68,19 @@ capture_memory_snapshot() {
 printf 'DSpark A/B label: %s\nResults: %s\n' "${LABEL}" "${RESULT_DIR}"
 capture_memory_snapshot "${RESULT_DIR}/memory-before.txt"
 
-VLLM_BASE_URL="${BASE_URL}" \
-VLLM_MODEL="${MODEL}" \
-VLLM_TOKENIZER="deepseek-ai/DeepSeek-V4-Flash-0731" \
-CONCURRENCIES="1 2 4" \
-RESULT_DIR="${RESULT_DIR}" \
-RUN_ID="${RUN_ID}" \
-scripts/bench_vllm.sh standard
+"${PYTHON}" scripts/bench_dspark_throughput.py \
+  --base-url "${BASE_URL}" \
+  --model "${MODEL}" \
+  --profile standard \
+  --input-len "${INPUT_LEN:-2048}" \
+  --output-len "${OUTPUT_LEN:-256}" \
+  --num-prompts "${NUM_PROMPTS:-16}" \
+  --num-warmups "${NUM_WARMUPS:-2}" \
+  --concurrencies "${CONCURRENCIES:-1,2,4}" \
+  --timeout "${BENCH_TIMEOUT:-3600}" \
+  --seed "${SEED:-42}" \
+  --result-dir "${RESULT_DIR}" \
+  --run-id "${RUN_ID}"
 
 RESULT_DIR="${RESULT_DIR}" BASE_URL="${BASE_URL}" MODEL="${MODEL}" \
   "${PYTHON}" - <<'PY'
@@ -132,19 +138,17 @@ print(f"Tool-call check passed: {output}")
 PY
 
 if [[ "${RUN_LONG}" == 1 ]]; then
-  VLLM_BASE_URL="${BASE_URL}" \
-  VLLM_MODEL="${MODEL}" \
-  VLLM_TOKENIZER="deepseek-ai/DeepSeek-V4-Flash-0731" \
-  NUM_PROMPTS=4 NUM_WARMUPS=1 INPUT_LEN=32768 OUTPUT_LEN=64 \
-  CONCURRENCIES=1 RESULT_DIR="${RESULT_DIR}" RUN_ID="${RUN_ID}" \
-  scripts/bench_vllm.sh standard
+  "${PYTHON}" scripts/bench_dspark_throughput.py \
+    --base-url "${BASE_URL}" --model "${MODEL}" --profile long-32k \
+    --input-len 32768 --output-len 64 --num-prompts 4 --num-warmups 1 \
+    --concurrencies 1 --timeout "${BENCH_TIMEOUT:-3600}" \
+    --seed "${SEED:-42}" --result-dir "${RESULT_DIR}" --run-id "${RUN_ID}"
 
-  VLLM_BASE_URL="${BASE_URL}" \
-  VLLM_MODEL="${MODEL}" \
-  VLLM_TOKENIZER="deepseek-ai/DeepSeek-V4-Flash-0731" \
-  NUM_PROMPTS=2 NUM_WARMUPS=0 INPUT_LEN=131072 OUTPUT_LEN=64 \
-  CONCURRENCIES=1 RESULT_DIR="${RESULT_DIR}" RUN_ID="${RUN_ID}" \
-  scripts/bench_vllm.sh standard
+  "${PYTHON}" scripts/bench_dspark_throughput.py \
+    --base-url "${BASE_URL}" --model "${MODEL}" --profile long-128k \
+    --input-len 131072 --output-len 64 --num-prompts 2 --num-warmups 0 \
+    --concurrencies 1 --timeout "${BENCH_TIMEOUT:-3600}" \
+    --seed "${SEED:-42}" --result-dir "${RESULT_DIR}" --run-id "${RUN_ID}"
 fi
 
 capture_memory_snapshot "${RESULT_DIR}/memory-after.txt"
