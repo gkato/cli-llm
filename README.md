@@ -262,8 +262,9 @@ percentage points per rank supply roughly 3.6 GiB more allocation than that atte
 while the worker's 0.73 target leaves approximately 24 GiB outside vLLM for the Harness
 and OS. A version-checked launcher overlay applies the two values independently. It is
 regenerated from the pristine upstream launcher during configure and preflight, and fails
-closed if MiaAI changes the patched commands. Startup then reads vLLM's live block count
-and refuses to expose the proxy unless at least 524,288 tokens fit. A single full 512K
+closed if MiaAI changes the patched commands. Startup then reads vLLM's authoritative
+`kv_cache_size_tokens` metric and refuses to expose the proxy unless at least 524,288
+tokens fit. A single full 512K
 request is the supported worst case; do not assume two full-window requests fit.
 `MAX_NUM_SEQS=4` remains appropriate for shorter concurrent coding-agent turns. After
 launch, `dspark memory` must report at least 24 GiB available on the Harness worker

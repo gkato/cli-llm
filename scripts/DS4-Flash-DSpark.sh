@@ -661,39 +661,7 @@ check_kv_capacity() {
   DSPARK_METRICS_URL="http://127.0.0.1:${port:-8888}/metrics" \
   DSPARK_REQUIRED_TOKENS="${max_model_len:-524288}" \
   DSPARK_METRICS_API_KEY="${api_key}" \
-    "${python}" - <<'PY'
-import os
-import re
-import urllib.request
-
-url = os.environ["DSPARK_METRICS_URL"]
-required = int(os.environ["DSPARK_REQUIRED_TOKENS"])
-request = urllib.request.Request(
-    url,
-    headers={"Authorization": f"Bearer {os.environ['DSPARK_METRICS_API_KEY']}"},
-)
-with urllib.request.urlopen(request, timeout=10) as response:
-    metrics = response.read().decode("utf-8", errors="replace")
-match = re.search(r"vllm:cache_config_info\{([^}]*)\}", metrics)
-if not match:
-    raise SystemExit("[dspark] ERROR: vLLM cache_config_info metric is missing")
-labels = dict(re.findall(r'(\w+)="([^"]*)"', match.group(1)))
-try:
-    block_size = int(float(labels["block_size"]))
-    gpu_blocks = int(float(labels["num_gpu_blocks"]))
-except (KeyError, ValueError) as exc:
-    raise SystemExit(f"[dspark] ERROR: invalid cache_config_info labels: {labels}") from exc
-capacity = block_size * gpu_blocks
-print(
-    f"[dspark] Measured KV capacity: {capacity:,} tokens "
-    f"({gpu_blocks} blocks x {block_size})"
-)
-if capacity < required:
-    raise SystemExit(
-        f"[dspark] ERROR: KV capacity {capacity:,} is below MAX_MODEL_LEN "
-        f"{required:,}; raise GPU_MEMORY_UTILIZATION_TEXT toward 0.72"
-    )
-PY
+    "${python}" "${PROJECT_ROOT}/scripts/check_dspark_kv_capacity.py"
 }
 
 check_public_exposure() {
