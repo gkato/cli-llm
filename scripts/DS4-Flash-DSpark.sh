@@ -84,7 +84,7 @@ Configuration environment variables:
     HF_CACHE                 Head Hugging Face cache
     WORKER_HF_CACHE          Worker Hugging Face cache
     DSPARK_RECIPE_DIR        Upstream checkout on the head
-    VLLM_HOST                Raw API bind address (profile: 127.0.0.1)
+    DSPARK_VLLM_HOST         Raw API bind override (profile: 127.0.0.1)
     DSPARK_VLLM_PORT         Raw vLLM port override (profile: 8888)
     MAX_MODEL_LEN            Profile default 524288 (512K)
     MAX_NUM_SEQS             Profile default 4
@@ -230,7 +230,10 @@ configure() {
   set_env_value DSPARK_REVISION "$(profile_value DSPARK_REVISION "${REVISION_DEFAULT}")"
   set_env_value SERVED_MODEL_NAME "$(profile_value SERVED_MODEL_NAME "${SERVED_MODEL_DEFAULT}")"
   set_env_value PROJECT_NAME "$(profile_value PROJECT_NAME deepseek-v4-flash-0731)"
-  set_env_value VLLM_HOST "$(profile_value VLLM_HOST 127.0.0.1)"
+  # ml.config loads generic .env.local values into the ml.cli process. Never
+  # let its single-node VLLM_HOST=0.0.0.0 override the private DSpark bind;
+  # deliberate cluster overrides use the DSPARK_ prefix, as the port does.
+  set_env_value VLLM_HOST "$(profile_value DSPARK_VLLM_HOST "$(profile_file_value VLLM_HOST 127.0.0.1)")"
   # ml.config loads the generic .env.local, which normally contains
   # VLLM_PORT=8000 for single-node backends. Do not let that implicit value
   # override this cluster's dedicated port. A deliberate DSpark override uses
@@ -299,7 +302,7 @@ configure() {
 
   log "Configured ${ENV_FILE}"
   log "Profile: official 0731@${REVISION_DEFAULT:0:12}, 512K, NVFP4 KV, 0.70 memory, low thinking, TP=2"
-  log "Ports: raw vLLM 127.0.0.1:8888; authenticated allow-list proxy 0.0.0.0:8000"
+  log "Ports: raw vLLM $(env_value VLLM_HOST):$(env_value VLLM_PORT); authenticated allow-list proxy $(profile_value DSPARK_PROXY_HOST 0.0.0.0):$(profile_value DSPARK_PROXY_PORT 8000)"
 }
 
 show_network() {
