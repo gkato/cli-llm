@@ -836,8 +836,8 @@ models:
 
   # Official DeepSeek V4 Flash 0731 on two linked GB10 systems (TP=2).
   # This is intentionally registered here for discovery, but it cannot use the
-  # local `ml.cli serve` path. Its Stage-C image contains DSpark, Patch 4,
-  # B12X MoE kernels, and the experimental NVFP4 MLA KV-cache implementation.
+  # local `ml.cli serve` path. Its digest-pinned Anemll runtime is combined
+  # with MiaAI-Lab's current DSpark/long-context/tool-calling hotfix set.
   # Operate it with: python3 -m ml.cli dspark <setup|build|download|start|...>
   deepseek-v4-flash-0731-dspark:
     hf_id: deepseek-ai/DeepSeek-V4-Flash-0731
@@ -846,17 +846,23 @@ models:
     external_recipe: scripts/DS4-Flash-DSpark.sh
     nodes: 2
     tensor_parallel_size: 2
-    # Coexistence profile: ~86 GiB per rank, leaving room for a 16 GiB Harness
-    # plus operating headroom on the Lenovo worker.
+    runtime_image: ghcr.io/anemll/dspark-vllm-gx10:0.1.1@sha256:a83948492cf13df455170fb42885f5ef4db54fefe0feff0f841ecbff464ac9d8
+    model_revision: 9e165c30e2704aec5d9d593cce3eebd58bbef1cb
+    # 512K is a per-request ceiling. The measured KV pool can hold one full
+    # 512K request but not two; four shorter coding-agent sequences still fit.
     vram_gb: 174
-    max_model_len: 262144
+    max_model_len: 524288
     max_num_seqs: 4
     max_num_batched_tokens: 4096
-    gpu_memory_utilization: 0.72
+    gpu_memory_utilization: 0.70
     kv_cache_dtype: nvfp4_ds_mla
     speculative_method: dspark
     speculative_tokens: 5
     harness_host: thinkstationpgx-fd9c
     harness_memory_limit_gb: 16
     worker_available_target_gb: 24
+    raw_api_url: http://127.0.0.1:8888
+    proxy_bind: 0.0.0.0:8000
+    proxy_url: http://127.0.0.1:8000
+    default_thinking: low
     cluster_profile: config/dspark-spark4e89-thinkstationpgx.env

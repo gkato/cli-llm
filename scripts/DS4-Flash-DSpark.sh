@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # DeepSeek-V4-Flash-0731 on two GB10/DGX Spark-class systems.
 #
-# This is a thin, opinionated wrapper around the maintained two-node recipe:
-# https://github.com/tonyd2wild/DeepSeek-v4-Flash-0731-DSpark-1M-NVFP4-KV-2x-DGX-Spark
-# It deliberately does not reimplement the patched vLLM image or its worker-first
-# launcher. Run every command on the head node.
+# This is an opinionated wrapper around MiaAI-Lab's maintained two-node recipe:
+# https://github.com/MiaAI-Lab/DeepSeek-v4-Flash-DSpark-2x-DGX-Spark
+# It keeps the existing ml.cli lifecycle while using MiaAI's immutable Anemll
+# runtime and current launch-time hotfix set. Run every command on the head node.
 
 if [ -z "${BASH_VERSION:-}" ]; then
   exec bash "$0" "$@"
@@ -13,17 +13,19 @@ fi
 set -Eeuo pipefail
 
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-UPSTREAM_REPO="${DSPARK_UPSTREAM_REPO:-https://github.com/tonyd2wild/DeepSeek-v4-Flash-0731-DSpark-1M-NVFP4-KV-2x-DGX-Spark.git}"
-RECIPE_DIR="${DSPARK_RECIPE_DIR:-${PROJECT_ROOT}/data/dspark/deepseek-v4-flash-0731}"
+UPSTREAM_REPO="${DSPARK_UPSTREAM_REPO:-https://github.com/MiaAI-Lab/DeepSeek-v4-Flash-DSpark-2x-DGX-Spark.git}"
+RECIPE_DIR="${DSPARK_RECIPE_DIR:-${PROJECT_ROOT}/data/dspark/miaai-deepseek-v4-flash-0731}"
 ENV_FILE="${DSPARK_ENV_FILE:-${RECIPE_DIR}/.env.dspark}"
 CONFIG_FILE="${DSPARK_CONFIG_FILE:-${PROJECT_ROOT}/config/dspark-spark4e89-thinkstationpgx.env}"
 PROJECT_ENV_FILE="${DSPARK_PROJECT_ENV_FILE:-${PROJECT_ROOT}/.env.local}"
-AUTH_COMPOSE_FILE="${DSPARK_AUTH_COMPOSE_FILE:-${RECIPE_DIR}/docker-compose.dspark.auth.yml}"
+LEGACY_RECIPE_DIR="${DSPARK_LEGACY_RECIPE_DIR:-${PROJECT_ROOT}/data/dspark/deepseek-v4-flash-0731}"
 
 # Defaults for this installation. Override any of these in the command environment.
 WORKER_HOST_DEFAULT="totalpass@192.168.177.11"
 MODEL_DEFAULT="deepseek-ai/DeepSeek-V4-Flash-0731"
 SERVED_MODEL_DEFAULT="deepseek-v4-flash-0731"
+REVISION_DEFAULT="9e165c30e2704aec5d9d593cce3eebd58bbef1cb"
+IMAGE_DEFAULT="ghcr.io/anemll/dspark-vllm-gx10:0.1.1@sha256:a83948492cf13df455170fb42885f5ef4db54fefe0feff0f841ecbff464ac9d8"
 
 log() { printf '[dspark] %s\n' "$*"; }
 warn() { printf '[dspark] WARNING: %s\n' "$*" >&2; }
@@ -41,7 +43,7 @@ Run on the NVIDIA/head Spark:
   # 2. Clone/configure from the committed machine profile and check both nodes.
   python3 -m ml.cli dspark setup
 
-  # 3. Build on both nodes, download/mirror weights, and start worker-first.
+  # 3. Pull the pinned image on both nodes, download/mirror weights, and start.
   python3 -m ml.cli dspark build
   python3 -m ml.cli dspark download
   scripts/start-DS4-Flash-DSpark.sh
@@ -59,15 +61,16 @@ Actions:
   configure  Apply environment overrides and the validated 0731 profile
   check      Validate local/remote prerequisites and the generated config
   setup      Run bootstrap, configure, and check
-  build      Build/sync the patched Stage-C vLLM image on both nodes
+  build      Pull/verify the immutable Anemll image on both nodes
   download   Download and verify weights, then mirror them to the worker
-  start      Refuse competing GPU workloads, then launch worker-first
+  start      Launch vLLM worker-first, then the authenticated proxy
   status     Show head and worker container state
   gpu-check  Prove PyTorch can initialize GB10 inside the runtime on both nodes
   memory     Show head/worker MemAvailable and verify the Harness budget
-  smoke      Run the upstream OpenAI API smoke test
+  smoke      Test model inference plus proxy auth/deny rules
   logs       Follow the distributed server logs
   stop       Stop the head and worker services
+  legacy-stop Stop the former Stage-C deployment during first cutover
   update     Fast-forward the upstream recipe (never changes this project)
   all        Run setup, build, download, and start
   path       Print the upstream checkout and environment file locations
@@ -81,16 +84,15 @@ Configuration environment variables:
     HF_CACHE                 Head Hugging Face cache
     WORKER_HF_CACHE          Worker Hugging Face cache
     DSPARK_RECIPE_DIR        Upstream checkout on the head
-    VLLM_HOST                API bind address (default: 0.0.0.0)
-    DSPARK_VLLM_PORT         DSpark API port override (profile default: 8888)
-    KV_CACHE_DTYPE           nvfp4_ds_mla (default) or fp8_ds_mla
-    MAX_MODEL_LEN            Profile default 262144 (256K)
+    VLLM_HOST                Raw API bind address (profile: 127.0.0.1)
+    DSPARK_VLLM_PORT         Raw vLLM port override (profile: 8888)
+    MAX_MODEL_LEN            Profile default 524288 (512K)
     MAX_NUM_SEQS             Profile default 4
     MAX_NUM_BATCHED_TOKENS   Profile default 4096
-    GPU_MEMORY_UTILIZATION   Profile default 0.72 on both TP ranks
+    GPU_MEMORY_UTILIZATION_TEXT  Profile default 0.70 on both TP ranks
     MTP_NUM_TOKENS           Default and recommended value: 5
     WORKER_AVAILABLE_TARGET_GIB  Required MemAvailable after model start (24)
-    DSPARK_USE_BUILTIN_DOCKERFILE_FRONTEND  Avoid docker/dockerfile:1 pull (default: 1)
+    DSPARK_VLLM_IMAGE        Immutable Anemll image reference
     NCCL_IB_GID_INDEX        RoCE v2/IPv4 GID index (profile: 3)
     ALLOW_ACTIVE_VLLM=1      Bypass the competing-workload launch guard
 
@@ -99,10 +101,12 @@ Notes:
     config/dspark-spark4e89-thinkstationpgx.env.
   - Process-environment values override the committed profile for one command.
   - API authentication is required and sourced from API_KEY in .env.local.
+  - Raw vLLM is loopback-only on 8888. The authenticated allow-list proxy is
+    the network-facing service on 8000.
   - `setup` never replaces an existing .env.dspark; it updates known keys in place.
   - Build and download are large/slow operations and run only when explicitly requested.
-  - NVIDIA has a generic DeepSeek V4 Flash NIM, but the current ml.cli NIM
-    backend is single-node. This 0731 TP=2 path uses a custom patched vLLM image.
+  - NVIDIA's generic NIM path here is single-node. This 0731 TP=2 path uses
+    MiaAI-Lab's hotfixes over a digest-pinned Anemll runtime.
 EOF
 }
 
@@ -164,34 +168,16 @@ project_env_value() {
 }
 
 configure_api_auth() {
-  local api_key base_compose tmp
+  local api_key
   api_key="${API_KEY:-$(project_env_value API_KEY)}"
   [[ -n "${api_key}" ]] || die "API_KEY is missing from ${PROJECT_ENV_FILE}"
   [[ "${api_key}" =~ ^[A-Za-z0-9._~-]+$ ]] \
     || die "API_KEY may contain only letters, digits, dot, underscore, tilde, and hyphen"
 
   set_env_value VLLM_API_KEY "${api_key}"
+  set_env_value DSPARK_API_KEYS ""
   chmod 600 "${ENV_FILE}"
-
-  base_compose="${RECIPE_DIR}/docker-compose.dspark.yml"
-  [[ -f "${base_compose}" ]] || die "Missing upstream Compose file: ${base_compose}"
-  tmp="$(mktemp "${AUTH_COMPOSE_FILE}.XXXXXX")"
-  if ! awk '
-    !added && /^    environment:[[:space:]]*$/ {
-      print
-      print "      VLLM_API_KEY: \"${VLLM_API_KEY:?VLLM_API_KEY must be set}\""
-      added = 1
-      next
-    }
-    { print }
-    END { if (!added) exit 42 }
-  ' "${base_compose}" >"${tmp}"; then
-    rm -f "${tmp}"
-    die "Could not add VLLM_API_KEY to the generated Compose file"
-  fi
-  chmod 644 "${tmp}"
-  mv "${tmp}" "${AUTH_COMPOSE_FILE}"
-  log "vLLM API authentication enabled from ${PROJECT_ENV_FILE} (key not displayed)"
+  log "vLLM and proxy authentication configured from ${PROJECT_ENV_FILE} (key not displayed)"
 }
 
 worker_host() {
@@ -239,30 +225,53 @@ configure() {
     set_env_value WORKER_HOST "$(profile_value WORKER_HOST "${WORKER_HOST_DEFAULT}")"
   fi
 
-  set_env_value DSPARK_MODEL "$(profile_value DSPARK_MODEL "${MODEL_DEFAULT}")"
+  set_env_value ABLITERATED "$(profile_value ABLITERATED 0)"
+  set_env_value DSPARK_MODEL_OFFICIAL "$(profile_value DSPARK_MODEL_OFFICIAL "${MODEL_DEFAULT}")"
+  set_env_value DSPARK_REVISION "$(profile_value DSPARK_REVISION "${REVISION_DEFAULT}")"
   set_env_value SERVED_MODEL_NAME "$(profile_value SERVED_MODEL_NAME "${SERVED_MODEL_DEFAULT}")"
-  set_env_value VLLM_HOST "$(profile_value VLLM_HOST 0.0.0.0)"
+  set_env_value PROJECT_NAME "$(profile_value PROJECT_NAME deepseek-v4-flash-0731)"
+  set_env_value VLLM_HOST "$(profile_value VLLM_HOST 127.0.0.1)"
   # ml.config loads the generic .env.local, which normally contains
   # VLLM_PORT=8000 for single-node backends. Do not let that implicit value
   # override this cluster's dedicated port. A deliberate DSpark override uses
   # DSPARK_VLLM_PORT instead.
   set_env_value VLLM_PORT "$(profile_value DSPARK_VLLM_PORT "$(profile_file_value VLLM_PORT 8888)")"
-  set_env_value MAX_MODEL_LEN "$(profile_value MAX_MODEL_LEN 262144)"
+  set_env_value MAX_MODEL_LEN "$(profile_value MAX_MODEL_LEN 524288)"
   set_env_value MAX_NUM_SEQS "$(profile_value MAX_NUM_SEQS 4)"
   set_env_value MAX_NUM_BATCHED_TOKENS "$(profile_value MAX_NUM_BATCHED_TOKENS 4096)"
-  set_env_value GPU_MEMORY_UTILIZATION "$(profile_value GPU_MEMORY_UTILIZATION 0.72)"
+  set_env_value LONG_PREFILL_TOKEN_THRESHOLD "$(profile_value LONG_PREFILL_TOKEN_THRESHOLD 1024)"
+  set_env_value GPU_MEMORY_UTILIZATION_TEXT "$(profile_value GPU_MEMORY_UTILIZATION_TEXT 0.70)"
   set_env_value MTP_NUM_TOKENS "$(profile_value MTP_NUM_TOKENS 5)"
-  set_env_value KV_CACHE_DTYPE "$(profile_value KV_CACHE_DTYPE nvfp4_ds_mla)"
+  set_env_value DEFAULT_THINKING "$(profile_value DEFAULT_THINKING low)"
+  set_env_value DSPARK_VLLM_IMAGE "$(profile_value DSPARK_VLLM_IMAGE "${IMAGE_DEFAULT}")"
+  set_env_value IMAGE_PYTHON "$(profile_value IMAGE_PYTHON /usr/bin/python3)"
+  set_env_value ENABLE_VL_SIDECAR "$(profile_value ENABLE_VL_SIDECAR 0)"
+  set_env_value PREPARE_VL_SIDECAR_MODEL "$(profile_value PREPARE_VL_SIDECAR_MODEL 0)"
+  set_env_value HF_HUB_OFFLINE "$(profile_value HF_HUB_OFFLINE 1)"
+  set_env_value TRANSFORMERS_OFFLINE "$(profile_value TRANSFORMERS_OFFLINE 1)"
+  set_env_value HF_HUB_DISABLE_XET "$(profile_value HF_HUB_DISABLE_XET 1)"
+  set_env_value DSPARK_MAX_INFLIGHT_PREFILLS "$(profile_value DSPARK_MAX_INFLIGHT_PREFILLS 2)"
+  set_env_value DSPARK_ISSUE43_SCHED_DIAG "$(profile_value DSPARK_ISSUE43_SCHED_DIAG 0)"
+  set_env_value VLLM_PREFIX_CACHE_RETENTION_INTERVAL "$(profile_value VLLM_PREFIX_CACHE_RETENTION_INTERVAL 4096)"
+  set_env_value VLLM_USE_BREAKABLE_CUDAGRAPH "$(profile_value VLLM_USE_BREAKABLE_CUDAGRAPH 0)"
+  set_env_value VLLM_ALLOW_LONG_MAX_MODEL_LEN 1
   set_env_value VLLM_USE_B12X_MOE 1
   set_env_value VLLM_USE_B12X_WO_PROJECTION 1
-  set_env_value VLLM_DSPARK_GPU_REJECTED_CONTEXT_MASK 1
   set_env_value VLLM_USE_FLASHINFER_SAMPLER 1
+  set_env_value DSPARK_ENABLE_ISSUE31_GPU_HOTFIX "$(profile_value DSPARK_ENABLE_ISSUE31_GPU_HOTFIX 0)"
+  set_env_value DSPARK_SKIP_HOTFIX "$(profile_value DSPARK_SKIP_HOTFIX 0)"
+  set_env_value DSPARK_SKIP_ISSUE22_HOTFIX "$(profile_value DSPARK_SKIP_ISSUE22_HOTFIX 0)"
+  set_env_value DSPARK_SKIP_SPIN_WAIT_HOTFIX "$(profile_value DSPARK_SKIP_SPIN_WAIT_HOTFIX 0)"
+  set_env_value DSPARK_SKIP_SUPPRESS_STOPS_HOTFIX "$(profile_value DSPARK_SKIP_SUPPRESS_STOPS_HOTFIX 0)"
 
   configure_api_auth
 
   for key in WORKER_HOST WORKER_SCRIPT_DIR HF_CACHE WORKER_HF_CACHE \
              MASTER_ADDR VLLM_HOST_IP WORKER_VLLM_HOST_IP NCCL_IB_HCA \
-             NCCL_SOCKET_IFNAME NCCL_IB_GID_INDEX MASTER_PORT; do
+             NCCL_SOCKET_IFNAME TP_SOCKET_IFNAME GLOO_SOCKET_IFNAME \
+             NCCL_IB_MERGE_NICS NCCL_CROSS_NIC \
+             NCCL_IB_GID_AUTO NCCL_IB_GID_INDEX WORKER_NCCL_IB_GID_INDEX \
+             MASTER_PORT; do
     set_env_value "${key}" "$(profile_value "${key}" "$(env_value "${key}")")"
   done
 
@@ -279,7 +288,7 @@ configure() {
   if ssh -o BatchMode=yes -o ConnectTimeout=8 "${wh}" true >/dev/null 2>&1; then
     rh="$(remote_home)"
     if [[ -z "$(env_value WORKER_SCRIPT_DIR)" ]]; then
-      set_env_value WORKER_SCRIPT_DIR "${rh}/deepseek-v4-flash-dspark-runtime"
+      set_env_value WORKER_SCRIPT_DIR "${rh}/deepseek-v4-flash-miaai-runtime"
     fi
     if [[ -z "$(env_value WORKER_HF_CACHE)" ]]; then
       set_env_value WORKER_HF_CACHE "${rh}/.cache/huggingface"
@@ -289,7 +298,8 @@ configure() {
   fi
 
   log "Configured ${ENV_FILE}"
-  log "Profile: official 0731, 256K context, NVFP4 KV, 0.72 memory, MTP=5, TP=2"
+  log "Profile: official 0731@${REVISION_DEFAULT:0:12}, 512K, NVFP4 KV, 0.70 memory, low thinking, TP=2"
+  log "Ports: raw vLLM 127.0.0.1:8888; authenticated allow-list proxy 0.0.0.0:8000"
 }
 
 show_network() {
@@ -373,7 +383,7 @@ check_local() {
   fi
 
   hca="$(env_value NCCL_IB_HCA)"
-  nic="$(env_value NCCL_SOCKET_IFNAME)"
+  nic="$(profile_value FABRIC_IFNAMES "$(env_value NCCL_SOCKET_IFNAME)")"
   gid_index="$(env_value NCCL_IB_GID_INDEX)"
   head_ips="$(profile_value HEAD_FABRIC_IPS "$(env_value VLLM_HOST_IP)")"
   IFS=',' read -r -a hcas <<<"${hca}"
@@ -419,7 +429,7 @@ check_remote() {
   local -a hcas nics worker_ip_values
   wh="$(worker_host)"
   hca="$(env_value NCCL_IB_HCA)"
-  nic="$(env_value NCCL_SOCKET_IFNAME)"
+  nic="$(profile_value FABRIC_IFNAMES "$(env_value NCCL_SOCKET_IFNAME)")"
   worker_ip="$(env_value WORKER_VLLM_HOST_IP)"
   gid_index="$(env_value NCCL_IB_GID_INDEX)"
   worker_ips="$(profile_value WORKER_FABRIC_IPS "${worker_ip}")"
@@ -484,20 +494,33 @@ check_config() {
   require_env_file
   for key in WORKER_HOST WORKER_SCRIPT_DIR MASTER_ADDR VLLM_HOST_IP \
              WORKER_VLLM_HOST_IP NCCL_IB_HCA NCCL_SOCKET_IFNAME HF_CACHE \
-             WORKER_HF_CACHE DSPARK_MODEL KV_CACHE_DTYPE VLLM_API_KEY; do
+             WORKER_HF_CACHE DSPARK_MODEL_OFFICIAL DSPARK_REVISION \
+             DSPARK_VLLM_IMAGE VLLM_API_KEY; do
     validate_value "${key}"
   done
 
-  [[ "$(env_value DSPARK_MODEL)" == "${MODEL_DEFAULT}" ]] \
-    || warn "Using non-default checkpoint: $(env_value DSPARK_MODEL)"
+  [[ "$(env_value DSPARK_MODEL_OFFICIAL)" == "${MODEL_DEFAULT}" ]] \
+    || warn "Using non-default checkpoint: $(env_value DSPARK_MODEL_OFFICIAL)"
+  [[ "$(env_value DSPARK_REVISION)" == "${REVISION_DEFAULT}" ]] \
+    || warn "DSPARK_REVISION differs from MiaAI-Lab's tested official pin"
+  [[ "$(env_value DSPARK_VLLM_IMAGE)" == "${IMAGE_DEFAULT}" ]] \
+    || warn "DSPARK_VLLM_IMAGE differs from the reviewed immutable Anemll image"
+  [[ "$(env_value VLLM_HOST)" == "127.0.0.1" ]] \
+    || die "VLLM_HOST must be 127.0.0.1; expose only the safety proxy"
+  [[ "$(env_value VLLM_PORT)" == "8888" ]] \
+    || warn "Raw vLLM port differs from the reviewed port 8888"
   [[ "$(env_value VLLM_USE_B12X_MOE)" == "1" ]] \
     || die "VLLM_USE_B12X_MOE must be 1; disabling it drops decode toward ~29 tok/s"
   [[ "$(env_value MTP_NUM_TOKENS)" == "5" ]] \
     || warn "MTP_NUM_TOKENS differs from the current verified value 5"
-  [[ "$(env_value MAX_MODEL_LEN)" == "262144" ]] \
-    || warn "MAX_MODEL_LEN differs from the 256K coexistence profile"
-  [[ "$(env_value GPU_MEMORY_UTILIZATION)" == "0.72" ]] \
-    || warn "GPU_MEMORY_UTILIZATION differs from the Harness coexistence profile (0.72)"
+  [[ "$(env_value MAX_MODEL_LEN)" == "524288" ]] \
+    || warn "MAX_MODEL_LEN differs from the 512K coexistence profile"
+  [[ "$(env_value MAX_NUM_SEQS)" == "4" ]] \
+    || warn "MAX_NUM_SEQS differs from the A/B benchmark profile (4)"
+  [[ "$(env_value GPU_MEMORY_UTILIZATION_TEXT)" == "0.70" ]] \
+    || warn "GPU_MEMORY_UTILIZATION_TEXT differs from the conservative Harness profile (0.70)"
+  [[ "$(env_value DEFAULT_THINKING)" =~ ^(off|low)$ ]] \
+    || warn "DEFAULT_THINKING is not low/off; coding requests will spend more tokens by default"
 
   local failed=0
   check_local || failed=1
@@ -544,14 +567,129 @@ show_memory() {
 }
 
 start_cluster() {
+  check_public_exposure
   configure_api_auth
   check_config
+  # Keep the old endpoint alive through every read-only validation. Cut over
+  # only once the new checkout, profile, fabric, cache, and image are ready.
+  if [[ "${DSPARK_CUTOVER_LEGACY:-0}" == 1 ]]; then
+    legacy_stop
+  fi
   ensure_gpus_free
   check_gpu_containers
   run_upstream_with_api start-deepseek-v4-flash-dspark.sh
+  if ! check_kv_capacity; then
+    warn "Stopping the new ranks because the configured 512K capacity was not verified"
+    run_upstream_with_api stop-deepseek-v4-flash-dspark.sh || true
+    die "512K KV-capacity gate failed; the public proxy was not started"
+  fi
   if ! show_memory; then
     warn "The model is running, but the Harness memory target was not met"
   fi
+  start_proxy
+}
+
+check_kv_capacity() {
+  local python port max_model_len api_key
+  python="$(project_python)"
+  port="$(env_value VLLM_PORT)"
+  max_model_len="$(env_value MAX_MODEL_LEN)"
+  api_key="$(env_value VLLM_API_KEY)"
+  DSPARK_METRICS_URL="http://127.0.0.1:${port:-8888}/metrics" \
+  DSPARK_REQUIRED_TOKENS="${max_model_len:-524288}" \
+  DSPARK_METRICS_API_KEY="${api_key}" \
+    "${python}" - <<'PY'
+import os
+import re
+import urllib.request
+
+url = os.environ["DSPARK_METRICS_URL"]
+required = int(os.environ["DSPARK_REQUIRED_TOKENS"])
+request = urllib.request.Request(
+    url,
+    headers={"Authorization": f"Bearer {os.environ['DSPARK_METRICS_API_KEY']}"},
+)
+with urllib.request.urlopen(request, timeout=10) as response:
+    metrics = response.read().decode("utf-8", errors="replace")
+match = re.search(r"vllm:cache_config_info\{([^}]*)\}", metrics)
+if not match:
+    raise SystemExit("[dspark] ERROR: vLLM cache_config_info metric is missing")
+labels = dict(re.findall(r'(\w+)="([^"]*)"', match.group(1)))
+try:
+    block_size = int(float(labels["block_size"]))
+    gpu_blocks = int(float(labels["num_gpu_blocks"]))
+except (KeyError, ValueError) as exc:
+    raise SystemExit(f"[dspark] ERROR: invalid cache_config_info labels: {labels}") from exc
+capacity = block_size * gpu_blocks
+print(
+    f"[dspark] Measured KV capacity: {capacity:,} tokens "
+    f"({gpu_blocks} blocks x {block_size})"
+)
+if capacity < required:
+    raise SystemExit(
+        f"[dspark] ERROR: KV capacity {capacity:,} is below MAX_MODEL_LEN "
+        f"{required:,}; raise GPU_MEMORY_UTILIZATION_TEXT toward 0.72"
+    )
+PY
+}
+
+check_public_exposure() {
+  local funnel_status
+  command -v tailscale >/dev/null 2>&1 || return 0
+  funnel_status="$(tailscale funnel status 2>/dev/null || true)"
+  if [[ -z "${funnel_status}" ]] && command -v sudo >/dev/null 2>&1; then
+    funnel_status="$(sudo -n tailscale funnel status 2>/dev/null || true)"
+  fi
+  if grep -Eq 'proxy http://127\.0\.0\.1:8888|proxy http://localhost:8888' <<<"${funnel_status}"; then
+    die "Tailscale Funnel still targets raw vLLM port 8888. Run: sudo tailscale funnel --https=443 off; sudo tailscale funnel --bg=true 8000"
+  fi
+}
+
+project_python() {
+  if [[ -n "${PYTHON_BIN:-}" ]]; then
+    printf '%s' "${PYTHON_BIN}"
+  elif [[ -n "${VIRTUAL_ENV:-}" && -x "${VIRTUAL_ENV}/bin/python" ]]; then
+    printf '%s' "${VIRTUAL_ENV}/bin/python"
+  elif [[ -x "${PROJECT_ROOT}/venv/bin/python" ]]; then
+    printf '%s' "${PROJECT_ROOT}/venv/bin/python"
+  elif [[ -x "${PROJECT_ROOT}/.venv/bin/python" ]]; then
+    printf '%s' "${PROJECT_ROOT}/.venv/bin/python"
+  else
+    printf '%s' python3
+  fi
+}
+
+run_proxy_cli() {
+  local action="$1" python proxy_host proxy_port raw_port
+  python="$(project_python)"
+  proxy_host="$(profile_value DSPARK_PROXY_HOST 0.0.0.0)"
+  proxy_port="$(profile_value DSPARK_PROXY_PORT 8000)"
+  if [[ -f "${ENV_FILE}" ]]; then
+    raw_port="$(env_value VLLM_PORT)"
+  else
+    raw_port=8888
+  fi
+  (cd "${PROJECT_ROOT}" && \
+    DSPARK_PROXY_HOST="${proxy_host}" \
+    DSPARK_PROXY_PORT="${proxy_port}" \
+    DSPARK_PROXY_UPSTREAM_URL="http://127.0.0.1:${raw_port:-8888}" \
+    "${python}" -m ml.cli dspark-proxy "${action}")
+}
+
+start_proxy() {
+  run_proxy_cli serve
+}
+
+proxy_status() {
+  run_proxy_cli status
+}
+
+proxy_smoke() {
+  run_proxy_cli smoke
+}
+
+stop_proxy() {
+  run_proxy_cli stop
 }
 
 gpu_probe_python() {
@@ -567,12 +705,13 @@ PY
 }
 
 gpu_probe_argv() {
-  local image="$1" python_code
+  local image="$1" image_python python_code
   python_code="$(gpu_probe_python)"
+  image_python="$(env_value IMAGE_PYTHON)"
+  image_python="${image_python:-/usr/bin/python3}"
   GPU_PROBE_ARGV=(
     docker run --rm --gpus all
-    --entrypoint bash "${image}" -lc
-    "export PATH=\"/opt/env/bin:/opt/env/nvvm/bin:/opt/env/targets/sbsa-linux/nvvm/bin:\${PATH:-}\"; export LD_LIBRARY_PATH=\"/opt/env/lib:/opt/env/targets/sbsa-linux/lib:\${LD_LIBRARY_PATH:-}\"; exec /opt/env/bin/python -c $(printf '%q' "${python_code}")"
+    --entrypoint "${image_python}" "${image}" -c "${python_code}"
   )
 }
 
@@ -592,7 +731,7 @@ check_gpu_containers() {
   local image wh failed=0 remote_command
   local -a probe
   image="$(env_value DSPARK_VLLM_IMAGE)"
-  image="${image:-vllm-dspark-runtime:dspark-nvfp4-stage-c}"
+  image="${image:-${IMAGE_DEFAULT}}"
   wh="$(worker_host)"
   gpu_probe_argv "${image}"
   probe=("${GPU_PROBE_ARGV[@]}")
@@ -655,57 +794,65 @@ run_upstream() {
 }
 
 run_upstream_with_api() (
-  local port api_key curl_home
+  local api_key
   require_env_file
-  port="$(env_value VLLM_PORT)"
-  port="${port:-8888}"
   api_key="$(env_value VLLM_API_KEY)"
   [[ -n "${api_key}" ]] || die "VLLM_API_KEY is missing from ${ENV_FILE}; run dspark configure"
-  [[ -f "${AUTH_COMPOSE_FILE}" ]] || die "Missing authenticated Compose file; run dspark configure"
-
-  # Upstream readiness and smoke scripts call curl directly. Give those calls
-  # an isolated curl config so the Bearer token is never placed in their
-  # command lines or printed in rendered configuration.
-  curl_home="$(mktemp -d /tmp/ml-compute-dspark-curl.XXXXXX)"
-  chmod 700 "${curl_home}"
-  umask 077
-  printf 'header = "Authorization: Bearer %s"\n' "${api_key}" >"${curl_home}/.curlrc"
-  trap 'rm -rf "${curl_home}"' EXIT
-  export CURL_HOME="${curl_home}"
-  export COMPOSE_FILE="${AUTH_COMPOSE_FILE}"
-  export API_URL="${API_URL:-http://127.0.0.1:${port}/v1/models}"
-  export CHAT_URL="${CHAT_URL:-http://127.0.0.1:${port}/v1/chat/completions}"
+  # MiaAI's lifecycle scripts source VLLM_API_KEY from .env.dspark, redact it
+  # from startup logs, and add it to their own readiness/smoke requests.
   run_upstream "$@"
 )
 
-run_upstream_build() (
-  local dockerfile backup_file patched_file frontend_mode
-  dockerfile="${RECIPE_DIR}/recipe/Dockerfile.dspark-runtime-overlay"
-  frontend_mode="$(profile_value DSPARK_USE_BUILTIN_DOCKERFILE_FRONTEND 1)"
+pull_runtime_image() {
+  require_env_file
+  local image wh head_id worker_id
+  image="$(env_value DSPARK_VLLM_IMAGE)"
+  [[ "${image}" == *@sha256:* ]] \
+    || die "DSPARK_VLLM_IMAGE must include an immutable @sha256 digest"
+  wh="$(worker_host)"
+  log "Pulling immutable Anemll runtime on head"
+  docker pull "${image}"
+  log "Pulling the identical runtime on worker ${wh}"
+  ssh "${wh}" "docker pull $(printf '%q' "${image}")"
+  head_id="$(docker image inspect "${image}" --format '{{.Id}}')"
+  worker_id="$(ssh "${wh}" "docker image inspect $(printf '%q' "${image}") --format '{{.Id}}'")"
+  [[ -n "${head_id}" && "${head_id}" == "${worker_id}" ]] \
+    || die "Pinned image IDs differ between ranks: head=${head_id:-missing}, worker=${worker_id:-missing}"
+  log "Pinned runtime verified on both ranks: ${head_id}"
+}
 
-  if [[ "${frontend_mode}" != 1 ]] || ! head -n 1 "${dockerfile}" | grep -q '^# syntax=docker/dockerfile:1'; then
-    run_upstream build-dspark-vllm-runtime.sh
-    return
+legacy_stop() {
+  if [[ "${LEGACY_RECIPE_DIR}" == "${RECIPE_DIR}" || ! -d "${LEGACY_RECIPE_DIR}" ]]; then
+    log "No separate legacy deployment found"
+    return 0
   fi
+  if [[ ! -x "${LEGACY_RECIPE_DIR}/stop-deepseek-v4-flash-dspark.sh" ]]; then
+    warn "Legacy directory exists without a stop script: ${LEGACY_RECIPE_DIR}"
+    return 0
+  fi
+  log "Stopping the previous Stage-C deployment before cutover"
+  (cd "${LEGACY_RECIPE_DIR}" && ./stop-deepseek-v4-flash-dspark.sh)
+}
 
-  # The upstream overlay Dockerfile declares docker/dockerfile:1, causing an
-  # extra Docker Hub pull. Omitting the directive makes BuildKit use its bundled
-  # Dockerfile frontend. Patch only for this invocation; the EXIT trap restores
-  # the pristine upstream file even when a build is interrupted. The temporary
-  # file is also what the upstream rsync sends to the worker, so both nodes use
-  # the same frontend without permanently dirtying the head checkout.
-  backup_file="$(mktemp /tmp/ml-compute-dspark-dockerfile.XXXXXX)"
-  patched_file="$(mktemp /tmp/ml-compute-dspark-dockerfile-patched.XXXXXX)"
-  cp -p "${dockerfile}" "${backup_file}"
-  trap 'mv "${backup_file}" "${dockerfile}"; if [[ -e "${patched_file}" ]]; then rm -f "${patched_file}"; fi' EXIT
+status_cluster() {
+  local failed=0
+  run_upstream_with_api status-deepseek-v4-flash-dspark.sh || failed=1
+  printf '\n'
+  proxy_status || failed=1
+  return "${failed}"
+}
 
-  tail -n +2 "${dockerfile}" >"${patched_file}"
-  chmod 644 "${patched_file}"
-  mv "${patched_file}" "${dockerfile}"
+smoke_cluster() {
+  run_upstream_with_api smoke-deepseek-v4-flash-dspark.sh
+  proxy_smoke
+}
 
-  log "Building with Docker's bundled Dockerfile frontend (external syntax directive disabled temporarily)"
-  run_upstream build-dspark-vllm-runtime.sh
-)
+stop_cluster() {
+  local failed=0
+  stop_proxy || failed=1
+  run_upstream_with_api stop-deepseek-v4-flash-dspark.sh || failed=1
+  return "${failed}"
+}
 
 action="${1:-help}"
 case "${action}" in
@@ -715,15 +862,16 @@ case "${action}" in
   configure) configure ;;
   check) check_config ;;
   setup) bootstrap; configure; check_config ;;
-  build) check_config; run_upstream_build ;;
-  download) check_config; run_upstream prepare-dspark-model-cache.sh ;;
+  build) check_config; pull_runtime_image ;;
+  download) check_config; run_upstream prepare-dspark-model-cache.sh --official --yes ;;
   start) start_cluster ;;
-  status) run_upstream_with_api status-deepseek-v4-flash-dspark.sh ;;
+  status) status_cluster ;;
   gpu-check) check_gpu_containers ;;
   memory) show_memory ;;
-  smoke) run_upstream_with_api smoke-deepseek-v4-flash-dspark.sh ;;
+  smoke) smoke_cluster ;;
   logs) run_upstream_with_api logs-deepseek-v4-flash-dspark.sh ;;
-  stop) run_upstream_with_api stop-deepseek-v4-flash-dspark.sh ;;
+  stop) stop_cluster ;;
+  legacy-stop) legacy_stop ;;
   update)
     require_checkout
     log "Fast-forwarding upstream recipe"
@@ -733,9 +881,9 @@ case "${action}" in
     bootstrap
     configure
     check_config
-    run_upstream_build
-    run_upstream prepare-dspark-model-cache.sh
-    start_cluster
+    pull_runtime_image
+    run_upstream prepare-dspark-model-cache.sh --official --yes
+    DSPARK_CUTOVER_LEGACY=1 start_cluster
     ;;
   path)
     printf 'CONFIG_FILE=%s\nRECIPE_DIR=%s\nENV_FILE=%s\n' "${CONFIG_FILE}" "${RECIPE_DIR}" "${ENV_FILE}"

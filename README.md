@@ -14,7 +14,7 @@ API; lightweight vision detectors use a small task-specific `/v1` API:
 | **Docker vLLM** | dedicated per-model container | safetensors + custom vLLM build | `docker serve <alias>` |
 | **Transformers vision** | local Python process | safetensors object detectors | `vision serve <alias>` |
 | **NIM** | Docker container (TensorRT-LLM) | NVIDIA-packaged | `nim serve <alias>` |
-| **DSpark cluster** | patched Docker/vLLM on two GB10 nodes | DeepSeek V4 Flash 0731 | `dspark <action>` |
+| **DSpark cluster** | MiaAI/Anemll vLLM on two GB10 nodes | DeepSeek V4 Flash 0731 | `dspark <action>` |
 
 An optional streaming router exposes several resident services through one
 public port, selects the backend from the request's `model` field, and can
@@ -225,19 +225,19 @@ python3 -m ml.cli nim status
 ### DSpark cluster (two linked GB10 systems)
 
 NVIDIA publishes a generic DeepSeek V4 Flash NIM, but this project's `nim` backend starts
-one local container and cannot orchestrate the two-node 0731/DSpark profile. Its fast
-dual-Spark path therefore uses a custom Stage-C vLLM image with TP=2, DSpark speculative
-decoding, B12X MoE kernels, and NVFP4 MLA KV cache. The committed machine profile uses
-a 256K context ceiling and 0.72 memory utilization on both ranks, leaving room for a
-16 GiB Harness on `thinkstationpgx-fd9c`. Run these on the head node:
+one local container and cannot orchestrate the two-node 0731/DSpark profile. The dual-Spark
+path wraps [MiaAI-Lab's maintained recipe](https://github.com/MiaAI-Lab/DeepSeek-v4-Flash-DSpark-2x-DGX-Spark),
+using its current hotfix set over the immutable Anemll `0.1.1` image digest and the pinned
+official 0731 model revision. The committed profile uses a 512K request ceiling, NVFP4 MLA
+KV, TP=2, MTP=5, low reasoning by default, and 0.70 memory utilization on both ranks.
 
 ```bash
 python3 -m ml.cli dspark network     # QSFP/RoCE state and setup guidance
 python3 -m ml.cli dspark setup       # clone, configure, and check both nodes
-python3 -m ml.cli dspark build       # build and sync the patched image
+python3 -m ml.cli dspark build       # pull/verify the pinned image on both ranks
 python3 -m ml.cli dspark download    # download/verify and mirror weights
 python3 -m ml.cli dspark gpu-check   # initialize CUDA in the image on both nodes
-scripts/start-DS4-Flash-DSpark.sh    # worker-first launch on port 8888
+scripts/start-DS4-Flash-DSpark.sh    # raw vLLM :8888 + safety proxy :8000
 python3 -m ml.cli dspark smoke
 ```
 
@@ -254,26 +254,70 @@ After launch, `python3 -m ml.cli dspark memory` verifies that the worker has at 
 24 GiB `MemAvailable` before the Harness starts. The generated upstream checkout and
 its `.env.dspark` live under ignored `data/dspark/` by default.
 
+The previous 0.72 runtime measured about 1.02M tokens of KV capacity. The new profile
+starts at 0.70 to recover roughly 2.4 GiB per rank, then reads vLLM's live block count and
+refuses to expose the proxy unless at least 524,288 tokens fit. A single full 512K request
+is the supported worst case; do not assume two full-window requests fit. `MAX_NUM_SEQS=4`
+remains appropriate for shorter concurrent coding-agent turns. After launch, `dspark
+memory` must report at least 24 GiB available on the Harness worker (16 GiB Harness cap
+plus 8 GiB operating headroom).
+
 The launcher runs `gpu-check` automatically before it starts either TP rank. If a
 driver update left Docker's NVIDIA CDI description stale, refresh it on the node
 named by the error with `sudo systemctl restart nvidia-cdi-refresh.service`, then
 rerun `python3 -m ml.cli dspark gpu-check`. This isolates container/driver failures
 from later NCCL and model-loading failures.
 
-DSpark uses the profile's port 8888 independently of the single-node
-`VLLM_PORT=8000` in `.env.local`. Use `DSPARK_VLLM_PORT` for an intentional cluster
-override; readiness, status, and smoke checks follow the resolved DSpark port.
-The launcher also requires `API_KEY` in `.env.local`, injects it as vLLM's
-`VLLM_API_KEY` through an untracked generated Compose file, and authenticates its
-own readiness and smoke requests. The key is never committed or printed.
+Raw vLLM binds only to `127.0.0.1:8888`. This matters because vLLM's native key does not
+cover every inference-capable compatibility route. The network-facing service is a
+deny-by-default proxy on `0.0.0.0:8000`; it authenticates `API_KEY` from `.env.local` and
+allows only reviewed OpenAI/Anthropic client routes. `/invocations`,
+`/generative_scoring`, `/tokenize`, `/detokenize`, metrics, and unknown future routes
+are not forwarded. Operate it independently with:
+
+```bash
+python3 -m ml.cli dspark-proxy status
+python3 -m ml.cli dspark-proxy smoke
+python3 -m ml.cli dspark-proxy logs -f
+```
+
+If Tailscale Funnel previously targeted raw port 8888, move it immediately before
+the cutover. The launcher refuses to start while Funnel still points at the raw port:
+
+```bash
+sudo tailscale funnel --https=443 off
+sudo tailscale funnel --bg=true 8000
+sudo tailscale funnel status
+```
+
+For minimal downtime, stage the runtime while the old model remains live, benchmark it,
+then switch Funnel and cut over:
+
+```bash
+python3 -m ml.cli dspark setup
+python3 -m ml.cli dspark build
+python3 -m ml.cli dspark download
+# Run the stage-c baseline here, then move Funnel from 8888 to 8000 as above.
+scripts/start-DS4-Flash-DSpark.sh --cutover
+```
 
 Once DSpark is running on the default port, query it with:
 
 ```bash
 API_KEY=$(sed -n 's/^API_KEY=//p' .env.local)
-curl -fsS http://127.0.0.1:8888/v1/models \
+curl -fsS http://127.0.0.1:8000/v1/models \
   -H "Authorization: Bearer ${API_KEY}" \
   | python3 -m json.tool
+```
+
+Before replacing the old server, collect a baseline; repeat with a different label after
+the MiaAI cutover. The full suite records C1/C2/C4 throughput, a forced tool call,
+32K/128K TTFT, and worker memory before/after:
+
+```bash
+VLLM_BASE_URL=http://127.0.0.1:8888 \
+  BENCH_LABEL=stage-c-256k scripts/bench_dspark_ab.sh full
+BENCH_LABEL=miaai-512k scripts/bench_dspark_ab.sh full
 ```
 
 ### Call it
@@ -355,7 +399,7 @@ cache reaches contexts vLLM can't afford.
 
 ## Model Registries
 
-Four registry YAML files cover the serving backends and router. Adding a model is normally a
+Registry YAML files cover the serving backends and proxies. Adding a model is normally a
 registry edit — no code changes.
 
 | File | Backend | Key fields |
@@ -364,6 +408,7 @@ registry edit — no code changes.
 | [registry/llama_models.yaml](registry/llama_models.yaml) | llama.cpp | `hf_repo` or `gguf_path`, `n_gpu_layers`, `ctx_size`, `served_name`, `extra_args` |
 | [registry/nim_catalog.yaml](registry/nim_catalog.yaml) | NIM | `image`, `model_name`, `gpu_count`, `extra_env` |
 | [registry/router.yaml](registry/router.yaml) | Single-port router | `host`, `port`, `backends`, `models`, `served_model`, `path_routes` |
+| [registry/dspark_proxy.yaml](registry/dspark_proxy.yaml) | DSpark safety proxy | `host`, `port`, `upstream_url`, `max_concurrency`, `max_request_bytes` |
 
 `registry/models.yaml` is the big one — every entry carries comments explaining *why* those
 numbers, with measured memory breakdowns per model and per context length. Read them before
@@ -727,6 +772,8 @@ ml-compute/
 │   ├── vision_api.py           text-detection HTTP API + one-request queue
 │   ├── router_server.py        single-port router process lifecycle
 │   ├── router_api.py           model-aware streaming reverse proxy
+│   ├── dspark_proxy_server.py  DSpark safety-proxy lifecycle
+│   ├── dspark_proxy_api.py     authenticated deny-by-default proxy
 │   ├── vllm_args.py            shared registry → vLLM argument translation
 │   ├── llama_server.py         llama.cpp (GGUF) lifecycle
 │   ├── nim_server.py           NIM container lifecycle (Docker)
@@ -744,6 +791,7 @@ ml-compute/
 │   ├── llama_models.yaml       GGUF aliases
 │   ├── nim_catalog.yaml        NIM container catalog
 │   ├── router.yaml             public model IDs → internal backend URLs
+│   ├── dspark_proxy.yaml       private vLLM → safe public endpoint
 │   ├── datasets.yaml           Fine-tuning dataset aliases
 │   └── apis.yaml               Hosted-provider model lists (teacher models)
 ├── Makefile.gb10               LoRA fine-tuning on DGX Spark (bf16, HF+PEFT+TRL)
@@ -758,11 +806,12 @@ ml-compute/
 ├── data/                       Created by setup.sh
 │   ├── hf_cache/               HuggingFace weights
 │   ├── adapters/<name>/        Trained LoRA adapters
-│   ├── logs/{vllm,llama,vision,router}.log  Server logs; training logs alongside
+│   ├── logs/{vllm,llama,vision,router,dspark_proxy}.log  Service logs
 │   ├── server.json             Running server state (PID, port, model, backend)
 │   ├── docker_state.json       Managed Docker vLLM container state
 │   ├── vision_server.json      Transformers vision server state
-│   └── router_server.json      Model-router server state
+│   ├── router_server.json      Model-router server state
+│   └── dspark_proxy_server.json DSpark safety-proxy state
 ├── setup.sh                    Arch-aware one-shot setup
 ├── requirements.txt            x86_64 dependency set
 └── .env.example                Template for .env.local

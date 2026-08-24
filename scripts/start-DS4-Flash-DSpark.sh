@@ -24,14 +24,22 @@ case "${1:-}" in
     "${PYTHON}" -m ml.cli dspark setup
     "${PYTHON}" -m ml.cli dspark build
     "${PYTHON}" -m ml.cli dspark download
+    FIRST_RUN=1
+    ;;
+  --cutover)
+    # Image/cache were staged separately; perform only the checked legacy
+    # cutover and start sequence.
+    FIRST_RUN=1
     ;;
   -h|--help)
     cat <<'EOF'
-Usage: scripts/start-DS4-Flash-DSpark.sh [--first-run]
+Usage: scripts/start-DS4-Flash-DSpark.sh [--first-run|--cutover]
 
-With no argument, reapply the committed cluster profile and start the already
-prepared model worker-first. --first-run also clones/builds the runtime and
-downloads/mirrors the model before starting it.
+With no argument, reapply the committed cluster profile, start the model
+worker-first on loopback port 8888, then start the authenticated proxy on 8000.
+--first-run also clones MiaAI-Lab's recipe, pulls the pinned Anemll image,
+downloads/mirrors the model, and performs the legacy Stage-C cutover.
+--cutover skips staging and performs only the validated legacy cutover/start.
 EOF
     exit 0
     ;;
@@ -43,6 +51,12 @@ EOF
 esac
 
 # Reapply the checked-in profile so an old generated .env.dspark cannot retain
-# stale 1M-context or 0.85-memory values.
+# stale context, memory, runtime-image, or public-bind values.
 "${PYTHON}" -m ml.cli dspark configure
-"${PYTHON}" -m ml.cli dspark start
+if [[ "${FIRST_RUN:-0}" == 1 ]]; then
+  # The dspark start action first rejects a Funnel still pointing at unsafe
+  # port 8888, then stops the legacy deployment immediately before cutover.
+  DSPARK_CUTOVER_LEGACY=1 "${PYTHON}" -m ml.cli dspark start
+else
+  "${PYTHON}" -m ml.cli dspark start
+fi

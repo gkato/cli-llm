@@ -1,0 +1,10 @@
+dspark_proxy:
+  # The proxy is the only listener intended for LAN, Tailscale, or Funnel.
+  # vLLM itself binds only to 127.0.0.1:8888.
+  host: 0.0.0.0
+  port: 8000
+  upstream_url: http://127.0.0.1:8888
+  upstream_health_path: /v1/models
+  request_timeout_seconds: 3600
+  max_request_bytes: 50000000
+  max_concurrency: 4

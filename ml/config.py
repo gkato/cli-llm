@@ -41,6 +41,18 @@ def get_router_config() -> dict:
     return _safe_load("router")
 
 
+def get_dspark_proxy_config() -> dict:
+    """Load the authenticated DSpark allow-list proxy configuration."""
+    config = _safe_load("dspark_proxy")
+    if host := os.getenv("DSPARK_PROXY_HOST"):
+        config["host"] = host
+    if port := os.getenv("DSPARK_PROXY_PORT"):
+        config["port"] = int(port)
+    if upstream := os.getenv("DSPARK_PROXY_UPSTREAM_URL"):
+        config["upstream_url"] = upstream
+    return config
+
+
 def _safe_load(name: str) -> dict:
     try:
         return _load_yaml(name).get(name, {}) or {}

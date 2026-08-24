@@ -50,6 +50,12 @@ COMMON WORKFLOWS
     ml.cli router status
     ml.cli router logs -f
 
+
+  DSpark safety proxy:
+    ml.cli dspark-proxy serve              # authenticated allow-list on :8000
+    ml.cli dspark-proxy status
+    ml.cli dspark-proxy logs -f
+
 \b
   NVIDIA NIM container serving (preferred on GB10):
     ml.cli nim models                     # list NIM catalog
@@ -60,7 +66,7 @@ COMMON WORKFLOWS
 \b
   Two-node DSpark serving (DeepSeek V4 Flash 0731):
     ml.cli dspark setup                   # configure and validate both nodes
-    ml.cli dspark build                   # build/sync patched vLLM image
+    ml.cli dspark build                   # pull/verify pinned Anemll image
     ml.cli dspark download                # download and mirror model weights
     ml.cli dspark start                   # worker-first TP=2 launch
 
@@ -657,8 +663,84 @@ def router_logs(follow: bool, lines: int):
 
 
 # ---------------------------------------------------------------------------
+# DSpark authenticated allow-list proxy
+# ---------------------------------------------------------------------------
+
+
+@cli.group("dspark-proxy")
+def dspark_proxy_group():
+    """Operate the authenticated safety proxy in front of DSpark."""
+
+
+@dspark_proxy_group.command("serve")
+@click.option("--port", type=int, default=None, help="Override registry port")
+@click.option("--foreground", is_flag=True, help="Run attached in the terminal")
+def dspark_proxy_serve(port: int | None, foreground: bool):
+    """Start the DSpark allow-list proxy."""
+    from ml.dspark_proxy_server import start
+
+    try:
+        info = start(port=port, foreground=foreground)
+    except (RuntimeError, ValueError) as exc:
+        raise click.ClickException(str(exc)) from exc
+    click.echo(f"✓ DSpark safety proxy running (pid={info['pid']})")
+    click.echo(f"  Public API: http://localhost:{info['port']}/v1")
+    click.echo("  Raw vLLM:   http://127.0.0.1:8888 (loopback only)")
+
+
+@dspark_proxy_group.command("status")
+def dspark_proxy_status():
+    """Show proxy and upstream readiness."""
+    from ml.dspark_proxy_server import status
+
+    state = status()
+    if not state["running"]:
+        click.echo("State: not running")
+        return
+    readiness = "ready ✓" if state["ready"] else "degraded…"
+    click.echo(f"State: {readiness}")
+    click.echo(f"  PID:  {state['pid']}")
+    click.echo(f"  URL:  http://localhost:{state['port']}")
+    click.echo(f"  Logs: {state['log_path']}")
+
+
+@dspark_proxy_group.command("stop")
+def dspark_proxy_stop():
+    """Stop the proxy without stopping the two-node model."""
+    from ml.dspark_proxy_server import stop
+
+    click.echo("✓ Stopped DSpark safety proxy" if stop() else "Nothing running")
+
+
+@dspark_proxy_group.command("smoke")
+def dspark_proxy_smoke():
+    """Verify proxy auth, upstream access, and denied unsafe routes."""
+    from ml.dspark_proxy_server import smoke
+
+    try:
+        result = smoke()
+    except RuntimeError as exc:
+        raise click.ClickException(str(exc)) from exc
+    click.echo("✓ DSpark proxy safety smoke passed")
+    click.echo(f"  authorized /v1/models: {result['authorized_models']}")
+    click.echo(f"  no-key /v1/models:     {result['unauthenticated_models']}")
+    click.echo(f"  keyed /invocations:    {result['denied_invocations']}")
+
+
+@dspark_proxy_group.command("logs")
+@click.option("-f", "--follow", is_flag=True, help="Follow log output")
+@click.option("-n", "--lines", type=int, default=50, show_default=True)
+def dspark_proxy_logs(follow: bool, lines: int):
+    """Show DSpark proxy logs."""
+    from ml.dspark_proxy_server import tail_logs
+
+    tail_logs(lines=lines, follow=follow)
+
+
+# ---------------------------------------------------------------------------
 # NIM — NVIDIA Inference Microservices façade
 # ---------------------------------------------------------------------------
+
 
 NIM_EPILOG = """
 \b
@@ -874,7 +956,7 @@ def nim_logs(follow: bool, lines: int):
 DSPARK_ACTIONS = [
     "network", "bootstrap", "configure", "check", "setup", "build",
     "download", "start", "status", "gpu-check", "memory", "smoke", "logs",
-    "stop", "update", "all", "path", "help",
+    "stop", "legacy-stop", "update", "all", "path", "help",
 ]
 
 
@@ -891,13 +973,13 @@ def dspark_cmd(action: str):
     \b
     This is a dedicated cluster backend, not NVIDIA NIM and not the local
     `serve vllm` path. It delegates to scripts/DS4-Flash-DSpark.sh, which
-    installs and operates the maintained patched Docker/vLLM TP=2 recipe.
+    installs and operates the MiaAI/Anemll Docker/vLLM TP=2 recipe.
 
     \b
     Typical sequence:
       ml.cli dspark network
       ml.cli dspark setup
-      ml.cli dspark build
+      ml.cli dspark build        # immutable Anemll image on both ranks
       ml.cli dspark download
       ml.cli dspark gpu-check
       ml.cli dspark start
