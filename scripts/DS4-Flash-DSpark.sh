@@ -653,14 +653,16 @@ check_cutover_artifacts() {
 }
 
 check_kv_capacity() {
-  local python port max_model_len api_key
+  local python port max_model_len api_key project_name
   python="$(project_python)"
   port="$(env_value VLLM_PORT)"
   max_model_len="$(env_value MAX_MODEL_LEN)"
   api_key="$(env_value VLLM_API_KEY)"
+  project_name="$(env_value PROJECT_NAME)"
   DSPARK_METRICS_URL="http://127.0.0.1:${port:-8888}/metrics" \
   DSPARK_REQUIRED_TOKENS="${max_model_len:-524288}" \
   DSPARK_METRICS_API_KEY="${api_key}" \
+  DSPARK_CONTAINER_NAME="${project_name:-deepseek-v4-flash-0731}-vllm-dspark-1" \
     "${python}" "${PROJECT_ROOT}/scripts/check_dspark_kv_capacity.py"
 }
 

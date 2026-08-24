@@ -257,14 +257,16 @@ its `.env.dspark` live under ignored `data/dspark/` by default.
 
 The first Anemll launch at 0.70 gave the head 2.54 GiB of KV cache while 512K required
 3.78 GiB. A subsequent 0.72/0.70 attempt profiled only 1.23 GiB on both ranks. The
-profile now uses 0.75/0.73: three extra
-percentage points per rank supply roughly 3.6 GiB more allocation than that attempt,
-while the worker's 0.73 target leaves approximately 24 GiB outside vLLM for the Harness
-and OS. A version-checked launcher overlay applies the two values independently. It is
+profile now uses 0.75/0.73: three extra percentage points per rank supply roughly
+3.6 GiB more allocation than that attempt, while the worker's 0.73 target leaves
+approximately 24 GiB outside vLLM for the Harness and OS. A version-checked launcher
+overlay applies the two values independently. It is
 regenerated from the pristine upstream launcher during configure and preflight, and fails
-closed if MiaAI changes the patched commands. Startup then reads vLLM's authoritative
-`kv_cache_size_tokens` metric and refuses to expose the proxy unless at least 524,288
-tokens fit. A single full 512K
+closed if MiaAI changes the patched commands. Startup then reads vLLM's model-aware
+`Maximum concurrency for 524,288 tokens` boot result and refuses to expose the proxy
+unless at least one full request fits. It deliberately does not gate on
+`cache_config_info`: current DeepSeek V4 hybrid-cache builds can publish a corrupted
+`block_size=4` and under-report token capacity there. A single full 512K
 request is the supported worst case; do not assume two full-window requests fit.
 `MAX_NUM_SEQS=4` remains appropriate for shorter concurrent coding-agent turns. After
 launch, `dspark memory` must report at least 24 GiB available on the Harness worker

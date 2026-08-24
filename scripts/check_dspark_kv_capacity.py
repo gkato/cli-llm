@@ -1,15 +1,39 @@
 #!/usr/bin/env python3
-"""Validate DSpark KV capacity from vLLM's authoritative metrics label."""
+"""Validate DSpark KV capacity from vLLM's model-aware startup result."""
 
 from __future__ import annotations
 
 import os
 import re
+import subprocess
 import urllib.request
 
 
 CACHE_CONFIG_METRIC = re.compile(r"vllm:cache_config_info\{([^}]*)\}")
 METRIC_LABEL = re.compile(r'(\w+)="([^"]*)"')
+STARTUP_CAPACITY = re.compile(r"GPU KV cache size:\s*([\d,]+)\s+tokens")
+STARTUP_CONCURRENCY = re.compile(
+    r"Maximum concurrency for\s*([\d,]+)\s+tokens per request:\s*([\d.]+)x"
+)
+
+
+def parse_startup_capacity(logs: str, required: int) -> tuple[int | None, float | None]:
+    capacities = STARTUP_CAPACITY.findall(logs)
+    capacity = int(capacities[-1].replace(",", "")) if capacities else None
+
+    concurrency = None
+    for token_text, concurrency_text in STARTUP_CONCURRENCY.findall(logs):
+        if int(token_text.replace(",", "")) == required:
+            concurrency = float(concurrency_text)
+    return capacity, concurrency
+
+
+def startup_capacity_fits(
+    capacity: int | None, concurrency: float | None, required: int
+) -> bool:
+    if concurrency is not None:
+        return concurrency >= 1.0
+    return capacity is not None and capacity >= required
 
 
 def parse_cache_capacity(metrics: str) -> tuple[int, str]:
@@ -48,23 +72,63 @@ def parse_cache_capacity(metrics: str) -> tuple[int, str]:
 def main() -> int:
     url = os.environ["DSPARK_METRICS_URL"]
     required = int(os.environ["DSPARK_REQUIRED_TOKENS"])
+    container = os.environ["DSPARK_CONTAINER_NAME"]
     api_key = os.environ.get("DSPARK_METRICS_API_KEY", "")
+
+    try:
+        completed = subprocess.run(
+            ["docker", "logs", container],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            check=True,
+        )
+    except (OSError, subprocess.CalledProcessError) as error:
+        print(f"[dspark] ERROR: could not read startup logs for {container}: {error}")
+        return 1
+
+    startup_capacity, startup_concurrency = parse_startup_capacity(
+        completed.stdout, required
+    )
+    if startup_capacity is None and startup_concurrency is None:
+        print(
+            "[dspark] ERROR: vLLM startup KV-capacity result is missing; "
+            "refusing to rely on the known-broken DeepSeek V4 cache metric"
+        )
+        return 1
+
+    details = []
+    if startup_capacity is not None:
+        details.append(f"{startup_capacity:,} startup tokens")
+    if startup_concurrency is not None:
+        details.append(f"{startup_concurrency:.2f}x at {required:,}")
+    print(f"[dspark] Startup KV capacity: {'; '.join(details)}")
+
+    # vLLM issues #50456 and #51163: EngineCoreReadyResponse can overwrite the
+    # correct per-worker hybrid-cache values before cache_config_info is exposed.
+    # Report the metric discrepancy for diagnosis, but never gate on it.
     headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
     request = urllib.request.Request(url, headers=headers)
     try:
         with urllib.request.urlopen(request, timeout=10) as response:
             metrics = response.read().decode("utf-8", errors="replace")
-        capacity, details = parse_cache_capacity(metrics)
-    except (OSError, ValueError) as error:
-        print(f"[dspark] ERROR: {error}")
-        return 1
-
-    print(f"[dspark] Measured KV capacity: {capacity:,} tokens ({details})")
-    if capacity < required:
+        metric_capacity, metric_details = parse_cache_capacity(metrics)
         print(
-            f"[dspark] ERROR: KV capacity {capacity:,} is below MAX_MODEL_LEN "
-            f"{required:,}; increase the constrained node's allocation or lower "
-            "MAX_MODEL_LEN"
+            f"[dspark] Diagnostic /metrics capacity: {metric_capacity:,} tokens "
+            f"({metric_details}; not used for this gate)"
+        )
+        if startup_capacity is not None and metric_capacity != startup_capacity:
+            print(
+                "[dspark] WARNING: ignoring the known DeepSeek V4 hybrid-cache "
+                "startup/metrics capacity mismatch"
+            )
+    except (OSError, ValueError) as error:
+        print(f"[dspark] WARNING: could not read diagnostic cache metric: {error}")
+
+    if not startup_capacity_fits(startup_capacity, startup_concurrency, required):
+        print(
+            f"[dspark] ERROR: startup KV capacity cannot hold one {required:,}-token "
+            "request; increase the constrained node's allocation or lower MAX_MODEL_LEN"
         )
         return 1
     return 0
