@@ -411,10 +411,10 @@ ensure_image() {
 
 gpu_check() {
   ensure_image
-  docker run --rm --gpus all --entrypoint python3 "${VLLM_IMAGE}" -c \
-    'import ray, torch, vllm; assert torch.cuda.is_available(); print(torch.cuda.get_device_name(0), vllm.__version__, ray.__version__)'
-  worker_docker run --rm --gpus all --entrypoint python3 "${VLLM_IMAGE}" -c \
-    'import ray, torch, vllm; assert torch.cuda.is_available(); print(torch.cuda.get_device_name(0), vllm.__version__, ray.__version__)'
+  local probe
+  probe="python3 -c 'import ray, torch, vllm; assert torch.cuda.is_available(); print(torch.cuda.get_device_name(0), vllm.__version__, ray.__version__)'"
+  docker run --rm --gpus all --entrypoint /bin/bash "${VLLM_IMAGE}" -lc "${probe}"
+  worker_docker run --rm --gpus all --entrypoint /bin/bash "${VLLM_IMAGE}" -lc "${probe}"
 }
 
 download_on_head() {
