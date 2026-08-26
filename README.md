@@ -885,6 +885,52 @@ reported by `/v1/models`; `.env.local` supplies the local `API_KEY` when present
 Override `VLLM_MODEL`, `VLLM_TOKENIZER`, `CONCURRENCIES`, `NUM_PROMPTS`,
 `NUM_WARMUPS`, `INPUT_LEN`, `OUTPUT_LEN`, or `RESULT_DIR` as needed.
 
+### Compare two coding models
+
+The two-endpoint comparison runner measures five quality dimensions and produces
+a self-contained HTML report plus auditable JSON. It uses pinned HumanEval+,
+CRUXEval, NL2Bash, and BFCL v4 inputs. Code planning and the documentation part
+of analysis use transparent custom rubrics because the external benchmarks do
+not directly measure those requested behaviors.
+
+```bash
+cp config/model-compare.example.yaml config/model-compare.yaml
+# Edit endpoint URLs, model IDs, labels, and API-key environment variable names.
+
+# Put these in the shell environment or the ignored .env.local file.
+export MODEL_A_API_KEY='...'
+export MODEL_B_API_KEY='...'
+
+# Optional: verify downloads, checksums, and deterministic case selection only.
+python3 scripts/compare_models.py --config config/model-compare.yaml --prepare-only
+
+# Run both models sequentially against the exact same cases.
+python3 scripts/compare_models.py --config config/model-compare.yaml
+```
+
+Generated HumanEval+ code runs only inside a networkless, read-only Docker
+container with CPU, memory, process, and time limits. On first use, the runner
+builds `docker/model-compare-eval/Dockerfile`, which pins NumPy for the EvalPlus
+tests. Startup verifies that NumPy imports successfully and stops with an
+infrastructure error if the evaluator is incomplete, rather than recording
+false model failures. The runner also refuses to run the comparison if Docker
+is unavailable; generated Bash commands are scored but never executed. API keys
+and custom header values are read at runtime and are not saved. Reports are
+written to `data/model-comparisons/` by default, with bar charts for every
+quality dimension, decode throughput, effective full-run tokens/second, time to
+first token, latency, case errors, source revisions, and dataset SHA-256 hashes.
+
+`benchmark.tool_mode: prompt` is the portable default for orchestration. Set it
+to `native` only when both endpoints implement compatible OpenAI tool calling;
+the selected mode is prominent in the report.
+
+The common output budget defaults to `max_tokens_per_request: 16384`. Set it to
+`null` to omit `max_tokens`; the endpoint may still enforce a server-side cap.
+Reasoning controls are not assumed because APIs use different schemas. Put
+provider-specific fields under each model's `request_body` (for example,
+`reasoning_effort: high` or `chat_template_kwargs: {thinking: false}`). These
+fields are sent verbatim and recorded in the report.
+
 ### NIM
 
 ```bash
