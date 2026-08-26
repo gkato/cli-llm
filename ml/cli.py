@@ -71,6 +71,19 @@ COMMON WORKFLOWS
     ml.cli dspark start                   # worker-first TP=2 launch
 
 \b
+  Two-node SGLang serving (Qwen3.8 Flash Next NVFP4):
+    ml.cli qwen38-flash-next setup        # pin/configure and check both nodes
+    ml.cli qwen38-flash-next download     # patch images + mirror model weights
+    ml.cli qwen38-flash-next start        # worker-first TP=2 + safety proxy
+
+\b
+  Two-node Ray/vLLM serving (GLM-5.3 Flash NVFP4, experimental GB10):
+    ml.cli glm53-flash setup              # configure and check both nodes
+    ml.cli glm53-flash pull               # pinned dedicated arm64 image
+    ml.cli glm53-flash download           # download + mirror 181 GiB weights
+    ml.cli glm53-flash start              # Ray TP=2 + safety proxy
+
+\b
   One-node DSpark serving (DeepSeek V4 Flash 0731 EXL3):
     ml.cli dspark-one setup               # pin/configure the MiaAI TP=1 recipe
     ml.cli dspark-one build               # pull the digest-pinned image
@@ -95,7 +108,7 @@ CO-RESIDENT SERVICES
 DOCS
 
 \b
-  Registry of models:    registry/models.yaml      (vLLM, Docker, DSpark)
+  Registry of models:    registry/models.yaml      (local, Docker, cluster)
   NIM catalog:           registry/nim_catalog.yaml (Docker-served)
   README:                README.md
 """
@@ -103,16 +116,18 @@ DOCS
 
 @click.group(epilog=CLI_EPILOG)
 def cli():
-    """ml-compute — OpenAI-compatible local and two-node inference.
+    """ml-compute — OpenAI-compatible local and clustered inference.
 
     \b
-    Seven serving backends behind a single CLI:
+    Nine serving backends behind a single CLI:
       • vLLM      pip-installed Python process, safetensors →  `ml.cli serve <alias>`
       • llama.cpp local llama-server process, GGUF          →  `ml.cli serve llama <id>`
       • Docker    dedicated vLLM image from model registry  →  `ml.cli docker serve <alias>`
       • Vision    Transformers object detection             →  `ml.cli vision serve <alias>`
       • NIM       NVIDIA TensorRT-LLM container, Docker      →  `ml.cli nim serve <alias>`
       • DSpark    patched Docker vLLM, two GB10 nodes, TP=2  →  `ml.cli dspark <action>`
+      • Qwen Next patched SGLang, two GB10 nodes, TP=2       →  `ml.cli qwen38-flash-next <action>`
+      • GLM Flash Ray + dedicated vLLM, two GB10 nodes, TP=2 →  `ml.cli glm53-flash <action>`
       • DSpark One EXL3/SparkInfer, one GB10 node, TP=1      →  `ml.cli dspark-one <action>`
 
     Language-model backends expose an OpenAI-compatible /v1 API. The vision
@@ -998,6 +1013,102 @@ def dspark_cmd(action: str):
     script = Path(__file__).resolve().parent.parent / "scripts" / "DS4-Flash-DSpark.sh"
     if not script.is_file():
         raise click.ClickException(f"DSpark recipe not found: {script}")
+    result = subprocess.run([str(script), action], check=False)
+    raise click.exceptions.Exit(result.returncode)
+
+
+# ---------------------------------------------------------------------------
+# Qwen3.8 Flash Next — patched two-node SGLang recipe for GB10/SM121
+# ---------------------------------------------------------------------------
+
+QWEN38_FLASH_NEXT_ACTIONS = [
+    "bootstrap", "configure", "check", "setup", "download", "start",
+    "status", "memory", "smoke", "logs", "logs-worker", "stop", "update",
+    "all", "path", "help",
+]
+
+
+@cli.command("qwen38-flash-next")
+@click.argument(
+    "action",
+    required=False,
+    default="help",
+    type=click.Choice(QWEN38_FLASH_NEXT_ACTIONS, case_sensitive=False),
+)
+def qwen38_flash_next_cmd(action: str):
+    """Manage Qwen3.8 Flash Next across two linked DGX Sparks.
+
+    \b
+    This delegates to MiaAI-Lab's SGLang TP=2 recipe while ml-compute pins
+    its revision/profile and keeps raw SGLang on loopback :8888 behind the
+    authenticated safety proxy on :8000. The SM121 QSA kernel patch and
+    in-checkpoint NEXTN draft are built and configured by the recipe.
+
+    \b
+    Typical sequence:
+      ml.cli qwen38-flash-next setup
+      ml.cli qwen38-flash-next download
+      ml.cli qwen38-flash-next start
+      ml.cli qwen38-flash-next smoke
+
+    Run `ml.cli qwen38-flash-next help` for memory and network constraints.
+    """
+    script = (
+        Path(__file__).resolve().parent.parent
+        / "scripts"
+        / "Qwen38-Flash-Next-Dual-DSpark.sh"
+    )
+    if not script.is_file():
+        raise click.ClickException(f"Qwen Flash Next recipe not found: {script}")
+    result = subprocess.run([str(script), action], check=False)
+    raise click.exceptions.Exit(result.returncode)
+
+
+# ---------------------------------------------------------------------------
+# GLM-5.3 Flash — dedicated vLLM image over a two-node Ray cluster
+# ---------------------------------------------------------------------------
+
+GLM53_FLASH_ACTIONS = [
+    "configure", "check", "setup", "pull", "download", "gpu-check", "start",
+    "status", "memory", "smoke", "logs", "logs-worker", "stop", "all",
+    "path", "help",
+]
+
+
+@cli.command("glm53-flash")
+@click.argument(
+    "action",
+    required=False,
+    default="help",
+    type=click.Choice(GLM53_FLASH_ACTIONS, case_sensitive=False),
+)
+def glm53_flash_cmd(action: str):
+    """Manage GLM-5.3 Flash NVFP4 across two linked DGX Sparks.
+
+    \b
+    This is an experimental GB10/SM121 deployment using the model's dedicated
+    arm64 vLLM image and the official two-node Ray pattern. ml-compute pins the
+    model/image, mirrors weights to both nodes, and keeps raw vLLM on loopback
+    :8888 behind the authenticated safety proxy on :8000.
+
+    \b
+    Typical sequence:
+      ml.cli glm53-flash setup
+      ml.cli glm53-flash pull
+      ml.cli glm53-flash download
+      ml.cli glm53-flash gpu-check
+      ml.cli glm53-flash start
+      ml.cli glm53-flash smoke
+
+    Run `ml.cli glm53-flash help` for the conservative memory constraints.
+    """
+    script = (
+        Path(__file__).resolve().parent.parent
+        / "scripts"
+        / "GLM53-Flash-Dual-DSpark.sh"
+    )
+    if not script.is_file():
+        raise click.ClickException(f"GLM-5.3 Flash recipe not found: {script}")
     result = subprocess.run([str(script), action], check=False)
     raise click.exceptions.Exit(result.returncode)
 

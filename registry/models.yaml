@@ -869,6 +869,117 @@ models:
     default_thinking: low
     cluster_profile: config/dspark-spark4e89-thinkstationpgx.env
 
+  # Qwen3.8 Flash Next on two linked DGX Sparks (TP=2). MiaAI-Lab's SGLang
+  # recipe supplies the SM121 QSA fallback kernel required by Qwen4Exp and
+  # launches worker-first over the direct ConnectX-7 RoCE link. Operate it
+  # with `python3 -m ml.cli qwen38-flash-next <action>`; it is intentionally
+  # independent from the DeepSeek `dspark` lifecycle above.
+  #
+  # The checked-in profile captures the upstream measured 900K YaRN setup:
+  # 0.82 UMA fraction, 1K QSA prefill chunks, PLE auto-offload, Mamba ratio
+  # 0.3, and in-checkpoint NEXTN 3/1/4. It must not share either Spark with
+  # another large model workload.
+  qwen3.8-flash-next-nvfp4-dspark:
+    hf_id: RadixArk/Qwen3.8-Flash-Next-NVFP4
+    served_model_name: Qwen3.8-Flash-Next-NVFP4
+    serve_backend: qwen38-flash-next
+    external_recipe: scripts/Qwen38-Flash-Next-Dual-DSpark.sh
+    upstream_repo: https://github.com/MiaAI-Lab/Qwen3.8-Flash-Next-Dual-DGX-Sparks
+    upstream_revision: dccb035c559f342fe8c0f65eb427671c6cf60730
+    model_revision: 7b719225242aacd3dbd3f9407468c2ee9a9d2594
+    nodes: 2
+    tensor_parallel_size: 2
+    runtime: sglang
+    runtime_image: qwen38-flashnext-dspark:ml-compute
+    runtime_base_image: lmsysorg/sglang:qwen38flashnext@sha256:12d3392bdc8be8d35e9a95f191df6aef99c5114bdbefd41bfdc7e760e6d25ec1
+    runtime_kernel_patch: sm121-qsa-triton-fallback
+    architecture: qwen4_exp
+    parameters_total_billion: 176
+    parameters_active_billion: 6
+    quantization: modelopt_fp4
+    weight_format: nvfp4
+    vram_gb: 191.2
+    native_context_len: 262144
+    max_model_len: 900000
+    rope_scaling: yarn
+    rope_scaling_factor: 4.0
+    chunked_prefill_size: 1024
+    max_num_seqs: 16
+    effective_max_num_seqs: 14
+    max_output_tokens: 32768
+    gpu_memory_utilization: 0.82
+    kv_cache_dtype: bfloat16
+    mamba_full_memory_ratio: 0.3
+    speculative_method: nextn
+    speculative_steps: 3
+    speculative_topk: 1
+    speculative_tokens: 4
+    multimodal: true
+    inputs:
+      - text
+      - image
+    raw_api_url: http://127.0.0.1:8888
+    proxy_bind: 0.0.0.0:8000
+    proxy_url: http://127.0.0.1:8000
+    default_thinking: true
+    dedicated_cluster: true
+    harness_coexistence: false
+    cluster_profile: config/dspark-qwen38-flash-next-nvfp4.env
+
+  # GLM-5.3 Flash NVFP4 on two linked DGX Sparks. Unlike the Qwen entry, no
+  # publisher-tested dual-Spark wrapper exists yet: this uses vLLM's official
+  # two-node Ray topology with the checkpoint's dedicated arm64/CUDA 13 image.
+  # The model card says the ~181 GiB checkpoint fits across two GB10 systems,
+  # but does not list SM121 as verified. This entry is therefore an explicitly
+  # experimental 32K/one-request bring-up profile using Marlin + eager mode.
+  glm-5.3-flash-nvfp4-dspark:
+    hf_id: LibertAIDAI/GLM-5.3-Flash-NVFP4
+    served_model_name: GLM-5.3-Flash-NVFP4
+    serve_backend: glm53-flash
+    external_recipe: scripts/GLM53-Flash-Dual-DSpark.sh
+    model_card: https://huggingface.co/LibertAIDAI/GLM-5.3-Flash-NVFP4
+    model_revision: 11d73216cd636238e82e1d77fe1042ffab36e7fa
+    cluster_reference: https://github.com/vllm-project/vllm/blob/51c1ee9b7c8acbba4899a8ebffd390685d171946/examples/ray_serving/run_cluster.sh
+    nodes: 2
+    tensor_parallel_size: 2
+    distributed_executor_backend: ray
+    runtime: vllm
+    runtime_image: vllm/vllm-openai:glm53-flash-arm64-cu130@sha256:905c02933be6021301db2dc284e24e3727467aa3a0f63b41d609885778a07bce
+    architecture: glm5_next
+    parameters_total_billion: 320
+    parameters_active_billion: 18
+    checkpoint_size_gib: 181
+    quantization: modelopt_fp4
+    weight_format: nvfp4_a16
+    weight_only_quantization: true
+    activation_dtype: bfloat16
+    vram_gb: 204.5
+    native_context_len: 1048576
+    max_model_len: 32768
+    max_num_seqs: 1
+    max_num_batched_tokens: 4096
+    gpu_memory_utilization: 0.84
+    kv_cache_dtype: auto
+    moe_backend: marlin
+    enforce_eager: true
+    speculative_method: mtp
+    speculative_tokens: 5
+    tool_call_parser: glm47
+    reasoning_parser: glm45
+    multimodal: true
+    inputs:
+      - text
+      - image
+    raw_api_url: http://127.0.0.1:8888
+    proxy_bind: 0.0.0.0:8000
+    proxy_url: http://127.0.0.1:8000
+    default_thinking: true
+    experimental: true
+    verified_on_gb10: false
+    dedicated_cluster: true
+    harness_coexistence: false
+    cluster_profile: config/dspark-glm53-flash-nvfp4.env
+
   # DeepSeek V4 Flash 0731 on one dedicated DGX Spark (TP=1). This is
   # MiaAI-Lab's 3.0-bpw EXL3/ExLlamaV3 checkpoint served by the digest-pinned
   # SparkInfer runtime. It is a separate lifecycle from the two-node `dspark`

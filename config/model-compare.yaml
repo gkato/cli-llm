@@ -1,0 +1,33 @@
+# API key values stay in environment variables and are never written to reports.
+title: Coding model comparison
+models:
+  - label: Model A
+    base_url: https://spark-4e89.tail1c73a3.ts.net/v1
+    model_id: deepseek-v4-flash-0731
+    api_key_env: MODEL_A_API_KEY
+    request_body:
+      chat_template_kwargs:
+        thinking: true
+        reasoning_effort: low
+
+  - label: Model B
+    base_url: https://promaxgb10-6d9f.tail1c73a3.ts.net/v1 
+    model_id: deepseek-v4-flash-0731
+    api_key_env: MODEL_B_API_KEY
+    request_body:
+      chat_template_kwargs:
+        thinking: true
+        reasoning_effort: low
+
+benchmark:
+  samples_per_dimension: 5
+  seed: 42
+  tool_mode: prompt       # prompt is portable; use native if both APIs support tools
+  timeout_seconds: 900
+  retries: 2
+  warmup_requests: 1
+  max_tokens_per_request: 46384  # set null to omit client-side max_tokens
+  docker_image: ml-compute-model-compare-eval:py312-numpy2.3.2  # auto-built with NumPy for EvalPlus
+  coding_timeout_seconds: 30
+
+output_dir: data/model-comparisons

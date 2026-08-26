@@ -1,0 +1,221 @@
+version: 1
+dimensions:
+  code_planning:
+    - id: custom-plan/async-cache-race
+      source: ml-compute custom code-planning evaluation v1
+      system: You are planning a code change. Produce a concise, implementation-ready plan; do not write the patch.
+      prompt: |
+        A Python async cache occasionally starts two upstream requests for the same missing key. Cancellation of one caller can also cancel work needed by other callers. Plan a backward-compatible fix. The public API cannot change and the service must remain observable during rollout.
+      rubric:
+        criteria:
+          - id: reproduce
+            any: [reproduce, failing test, deterministic test, regression test]
+          - id: inspect_paths
+            any: [call path, inspect, trace, cache miss path]
+          - id: single_flight
+            any: [single-flight, single flight, per-key future, per-key task, deduplicate]
+          - id: cancellation
+            any: [shield, cancellation, cancelled caller, shared task]
+          - id: cleanup
+            any: [cleanup, remove the in-flight, remove inflight, finally]
+          - id: concurrency_tests
+            any: [concurrent callers, concurrency test, race test, multiple callers]
+          - id: observability
+            any: [metric, logging, trace, observability]
+          - id: rollout
+            any: [rollout, feature flag, canary, rollback]
+        penalty_terms: [disable cancellation, remove the cache, global lock for every key]
+    - id: custom-plan/zero-downtime-schema
+      source: ml-compute custom code-planning evaluation v1
+      system: You are planning a production code and data migration. Produce ordered, verifiable steps and rollback points.
+      prompt: |
+        Rename a heavily used PostgreSQL column from customer to customer_id across an API service and background workers. Deployments are rolling, a 200M-row table cannot take a long exclusive lock, and old binaries may run for 30 minutes. Plan the change.
+      rubric:
+        criteria:
+          - id: dependency_inventory
+            any: [inventory, search usages, dependency, callers]
+          - id: expand_contract
+            any: [expand and contract, expand/contract, additive migration]
+          - id: compatibility
+            any: [old binaries, backward compatible, mixed version, compatibility]
+          - id: dual_path
+            any: [dual write, write both, compatibility view, trigger]
+          - id: backfill
+            any: [batch backfill, chunked backfill, incremental backfill, idempotent backfill]
+          - id: verification
+            any: [verify, parity, compare, invariant]
+          - id: indexes
+            any: [concurrently, index, constraint not valid, validate constraint]
+          - id: rollback
+            any: [rollback, roll back, revert]
+        penalty_terms: [rename the column directly, exclusive lock, one deployment]
+    - id: custom-plan/stream-parser
+      source: ml-compute custom code-planning evaluation v1
+      system: Produce a code-change plan grounded in diagnosis, tests, compatibility, and rollout. Do not implement it.
+      prompt: |
+        An OpenAI-compatible SSE client loses JSON when a UTF-8 character or data line is split across TCP chunks. It also buffers indefinitely if the server never sends [DONE]. Plan a fix that preserves current callbacks and metrics.
+      rubric:
+        criteria:
+          - id: reproduce_fragmentation
+            any: [fragment, split chunk, chunk boundary, fragmented]
+          - id: incremental_decode
+            any: [incremental utf-8 decoder, incremental decoder, byte buffer]
+          - id: sse_framing
+            any: [sse framing, event boundary, blank line, data lines]
+          - id: done_timeout
+            any: [idle timeout, read timeout, "missing [done]", missing done]
+          - id: compatibility
+            any: [callback, backward compatible, existing metrics, preserve]
+          - id: tests
+            any: [property test, randomized chunks, every split, regression test]
+          - id: error_handling
+            any: [malformed, error, partial event, incomplete]
+          - id: metrics
+            any: [ttft, metric, timing, first token]
+        penalty_terms: [decode each chunk independently, ignore unicode errors]
+    - id: custom-plan/public-api-refactor
+      source: ml-compute custom code-planning evaluation v1
+      system: Produce a safe, incremental implementation plan with concrete validation. Do not write code.
+      prompt: |
+        Split a 4,000-line Python module into packages without breaking undocumented imports used by external customers. Circular imports already exist and CI takes 50 minutes. Plan the refactor.
+      rubric:
+        criteria:
+          - id: import_inventory
+            any: [import graph, inventory imports, search imports, dependency graph]
+          - id: public_surface
+            any: [public api, compatibility surface, undocumented imports, exported names]
+          - id: shims
+            any: [compatibility shim, re-export, deprecation shim, forwarding module]
+          - id: cycles
+            any: [circular import, dependency inversion, shared types, break cycles]
+          - id: incremental
+            any: [incremental, one subsystem, small steps, slice]
+          - id: tests
+            any: [import test, contract test, regression test, api test]
+          - id: ci_strategy
+            any: [targeted tests, test selection, fast tests, ci]
+          - id: deprecation
+            any: [deprecation, release notes, migration guide, removal window]
+        penalty_terms: [big bang, update all customers]
+    - id: custom-plan/idempotent-jobs
+      source: ml-compute custom code-planning evaluation v1
+      system: Produce an implementation-ready plan with failure modes and verification. Do not write code.
+      prompt: |
+        A queue worker charges a card and then writes success to the database. If it crashes between those steps, the retry charges again. The payment provider supports idempotency keys. Plan a fix and migration for already queued jobs.
+      rubric:
+        criteria:
+          - id: failure_window
+            any: [failure window, crash between, at-least-once, retry]
+          - id: idempotency_key
+            any: [idempotency key, idempotent key]
+          - id: stable_identity
+            any: [job id, payment intent id, stable key, deterministic key]
+          - id: persistence
+            any: [persist, database, state machine, ledger]
+          - id: reconciliation
+            any: [reconcile, query provider, recovery]
+          - id: queued_migration
+            any: [already queued, existing jobs, backfill, migration]
+          - id: tests
+            any: [fault injection, crash test, retry test, regression test]
+          - id: observability
+            any: [metric, alert, logging, duplicate]
+        penalty_terms: [disable retries, exactly once delivery]
+  analysis_documentation:
+    - id: custom-doc/retry-function
+      source: ml-compute custom documentation evaluation v1
+      system: Explain the code for a maintainer. Be precise about behavior, edge cases, and operational consequences.
+      prompt: |
+        Document this function, including its retry count, timing, retryable failures, and one non-obvious concern:
+
+        def fetch(session, url, attempts=3):
+            for attempt in range(attempts):
+                try:
+                    response = session.get(url, timeout=(2, 10))
+                    response.raise_for_status()
+                    return response.json()
+                except (TimeoutError, ConnectionError):
+                    if attempt + 1 == attempts:
+                        raise
+                    time.sleep(2 ** attempt)
+      rubric:
+        criteria:
+          - id: attempts
+            any: [at most three, three attempts, attempts times, up to 3]
+          - id: timeouts
+            any: [connect timeout, 2 seconds, read timeout, 10 seconds]
+          - id: retry_scope
+            any: [timeouterror, connectionerror, timeout and connection, network errors]
+          - id: backoff
+            any: [exponential backoff, 1 then 2, 2 ** attempt]
+          - id: final_raise
+            any: [re-raise, final failure, last attempt, raises]
+          - id: json
+            any: [json, decoded response]
+          - id: http_errors
+            any: [http errors are not retried, http status, raise_for_status]
+          - id: concern
+            any: [jitter, blocking sleep, requests exception, exception classes]
+        penalty_terms: [retries every exception, retries http errors]
+    - id: custom-doc/batch-generator
+      source: ml-compute custom documentation evaluation v1
+      system: Explain the code for a maintainer. State invariants, edge cases, and resource behavior.
+      prompt: |
+        Document this generator and call out invalid input behavior:
+
+        def batches(items, size):
+            iterator = iter(items)
+            while batch := tuple(itertools.islice(iterator, size)):
+                yield batch
+      rubric:
+        criteria:
+          - id: lazy
+            any: [lazy, generator, on demand]
+          - id: iterable
+            any: [any iterable, iterator, consumes]
+          - id: tuple
+            any: [tuple]
+          - id: max_size
+            any: [at most size, up to size, size elements]
+          - id: final_partial
+            any: [partial final, final batch may, last batch]
+          - id: empty
+            any: [empty input, yields nothing, no batches]
+          - id: invalid_zero
+            any: [size zero, size <= 0, non-positive]
+          - id: validation
+            any: [validate, valueerror, otherwise yields nothing]
+        penalty_terms: [loads all items into memory, always full batches]
+    - id: custom-doc/transaction-context
+      source: ml-compute custom documentation evaluation v1
+      system: Explain the control flow and failure semantics of the code for a maintainer.
+      prompt: |
+        Document this context manager, including what happens when commit and rollback fail:
+
+        @contextmanager
+        def transaction(connection):
+            try:
+                yield connection.cursor()
+                connection.commit()
+            except BaseException:
+                connection.rollback()
+                raise
+      rubric:
+        criteria:
+          - id: cursor
+            any: [yields a cursor, cursor]
+          - id: commit
+            any: [commit, normal exit, success]
+          - id: baseexception
+            any: [baseexception, any exception, keyboardinterrupt, systemexit]
+          - id: rollback
+            any: [rollback]
+          - id: reraise
+            any: [re-raise, original exception, raises again]
+          - id: commit_failure
+            any: [commit fails, commit exception, commit failure]
+          - id: rollback_masks
+            any: [rollback failure, masks, replace the original, obscures]
+          - id: cursor_cleanup
+            any: [cursor is not closed, close cursor, resource leak, cleanup]
+        penalty_terms: [swallows exceptions, always commits]

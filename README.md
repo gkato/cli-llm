@@ -4,7 +4,7 @@ Local LLM inference and fine-tuning on your own hardware. Built for the **NVIDIA
 (GB10)** — Grace CPU + Blackwell GPU with 128 GB unified memory — and works on any local
 box with an NVIDIA GPU.
 
-One CLI, seven serving backends. Language models use the OpenAI-compatible `/v1`
+One CLI, nine serving backends. Language models use the OpenAI-compatible `/v1`
 API; lightweight vision detectors use a small task-specific `/v1` API:
 
 | Backend | Runs | Weights | Command |
@@ -15,6 +15,8 @@ API; lightweight vision detectors use a small task-specific `/v1` API:
 | **Transformers vision** | local Python process | safetensors object detectors | `vision serve <alias>` |
 | **NIM** | Docker container (TensorRT-LLM) | NVIDIA-packaged | `nim serve <alias>` |
 | **DSpark cluster** | MiaAI/Anemll vLLM on two GB10 nodes | DeepSeek V4 Flash 0731 | `dspark <action>` |
+| **Qwen Flash Next** | MiaAI SGLang TP2 on two GB10 nodes | Qwen3.8 Flash Next NVFP4 | `qwen38-flash-next <action>` |
+| **GLM Flash** | Dedicated vLLM + Ray TP2 on two GB10 nodes | GLM-5.3 Flash NVFP4 | `glm53-flash <action>` |
 | **DSpark One** | MiaAI SparkInfer/EXL3 on one dedicated GB10 | DeepSeek V4 Flash 0731 | `dspark-one <action>` |
 
 An optional streaming router exposes several resident services through one
@@ -331,6 +333,120 @@ VLLM_BASE_URL=http://127.0.0.1:8888 \
 BENCH_LABEL=miaai-512k scripts/bench_dspark_ab.sh full
 ```
 
+### Qwen3.8 Flash Next (two linked GB10 systems)
+
+The Qwen path wraps
+[MiaAI-Lab's dual-DGX-Spark recipe](https://github.com/MiaAI-Lab/Qwen3.8-Flash-Next-Dual-DGX-Sparks)
+at pinned revision `dccb035c559f342fe8c0f65eb427671c6cf60730`. It serves the
+pinned `RadixArk/Qwen3.8-Flash-Next-NVFP4` checkpoint: a multimodal 176B/6B-active
+MoE in ModelOpt NVFP4, using SGLang TP=2 and the model's in-checkpoint NEXTN
+draft. The adapter keeps the upstream-generated SM121 QSA Triton patch and JIT
+caches under ignored `data/dspark/`, while configuration and service exposure
+remain owned by `ml-compute`.
+
+Run these on the head/rank-0 Spark:
+
+```bash
+python3 -m ml.cli qwen38-flash-next setup
+python3 -m ml.cli qwen38-flash-next download  # patch/build both images + mirror ~135 GB
+python3 -m ml.cli qwen38-flash-next start
+python3 -m ml.cli qwen38-flash-next smoke
+```
+
+Or perform the complete first deployment with:
+
+```bash
+scripts/start-Qwen38-Flash-Next-Dual-DSpark.sh --first-run
+```
+
+Later boots use the same script without arguments. Machine addresses, RoCE
+interfaces, the digest-pinned SGLang base image, model revision, memory budget,
+and context profile are in
+[`config/dspark-qwen38-flash-next-nvfp4.env`](config/dspark-qwen38-flash-next-nvfp4.env).
+The lifecycle adapter is
+[`scripts/Qwen38-Flash-Next-Dual-DSpark.sh`](scripts/Qwen38-Flash-Next-Dual-DSpark.sh).
+
+The committed profile captures MiaAI-Lab's measured 900K YaRN configuration:
+`MEM_FRACTION_STATIC=0.82`, 1K-token QSA prefill chunks, PLE auto-offload,
+Mamba full-memory ratio 0.3, and NEXTN `3/1/4`. `CONTEXT_LENGTH` intentionally
+stays at the native 262,144 value so upstream's conservative preflight passes;
+the reviewed 900K YaRN model override is appended last through `EXTRA_ARGS`.
+The wrapper rejects a memory fraction above 0.82, prefill chunks above 1024,
+public raw binds, disabled PLE offload, or a disabled kernel patch.
+
+Do not add `--load-format dummy`: the upstream investigation found that the
+temporary FP16 copy of the PLE table can exhaust GB10 unified memory and
+hard-freeze both nodes. Cold start also requires at least 112 GiB
+`MemAvailable` on each Spark. Stop DeepSeek and any other large CUDA workload
+before switching this same two-node cluster to Qwen.
+
+Raw unauthenticated SGLang binds only to `127.0.0.1:8888`. The shared
+authenticated allow-list proxy remains the public API on port 8000, including
+for image-bearing OpenAI chat requests. Operational commands are independent
+from `dspark`:
+
+```bash
+python3 -m ml.cli qwen38-flash-next status
+python3 -m ml.cli qwen38-flash-next memory
+python3 -m ml.cli qwen38-flash-next logs
+python3 -m ml.cli qwen38-flash-next logs-worker
+python3 -m ml.cli qwen38-flash-next stop
+```
+
+### GLM-5.3 Flash NVFP4 (two linked GB10 systems, experimental)
+
+The GLM path serves
+[`LibertAIDAI/GLM-5.3-Flash-NVFP4`](https://huggingface.co/LibertAIDAI/GLM-5.3-Flash-NVFP4),
+a roughly 181 GiB, multimodal 320B/18B-active MoE. It uses the checkpoint's
+digest-pinned dedicated arm64/CUDA 13 vLLM image and the
+[official vLLM two-node Ray topology](https://github.com/vllm-project/vllm/blob/51c1ee9b7c8acbba4899a8ebffd390685d171946/examples/ray_serving/run_cluster.sh)
+with tensor parallelism `TP=2`.
+
+This integration is deliberately marked **experimental**. The model publisher
+says the weights fit on two GB10 desktops, but does not list SM121 among its
+verified runtime targets. The checked-in bring-up profile therefore uses the
+publisher's GB10 fallback—Marlin MoE with eager execution—plus 32K context,
+one sequence, a 0.84 UMA fraction, and at least 112 GiB `MemAvailable` on each
+Spark. It preserves the model-native `glm47` tool parser, `glm45` reasoning
+parser, and five-token in-checkpoint MTP speculation.
+
+Run on the head Spark:
+
+```bash
+python3 -m ml.cli glm53-flash setup
+python3 -m ml.cli glm53-flash pull
+python3 -m ml.cli glm53-flash download
+python3 -m ml.cli glm53-flash gpu-check
+python3 -m ml.cli glm53-flash start
+python3 -m ml.cli glm53-flash smoke
+```
+
+Or perform the complete initial staging and launch:
+
+```bash
+scripts/start-GLM53-Flash-Dual-DSpark.sh --first-run
+```
+
+The model revision, image digest, RoCE addresses, Ray settings, and memory
+guards are in
+[`config/dspark-glm53-flash-nvfp4.env`](config/dspark-glm53-flash-nvfp4.env).
+The lifecycle implementation is
+[`scripts/GLM53-Flash-Dual-DSpark.sh`](scripts/GLM53-Flash-Dual-DSpark.sh).
+The pinned snapshot is downloaded once on the head and rsynced to the worker;
+allow at least 240 GiB of free disk on both systems.
+
+Like the other cluster recipes, raw vLLM binds only to `127.0.0.1:8888` and
+the authenticated allow-list proxy owns public port 8000. Stop Qwen or
+DeepSeek before using the same pair for GLM:
+
+```bash
+python3 -m ml.cli glm53-flash status
+python3 -m ml.cli glm53-flash memory
+python3 -m ml.cli glm53-flash logs
+python3 -m ml.cli glm53-flash logs-worker
+python3 -m ml.cli glm53-flash stop
+```
+
 ### DSpark One (one dedicated GB10 system)
 
 The third-Spark path wraps
@@ -391,6 +507,8 @@ python3 -m ml.cli docker stop                 # dedicated vLLM image lifecycle
 python3 -m ml.cli vision stop                 # Transformers vision lifecycle
 python3 -m ml.cli nim stop                    # NIM has its own lifecycle
 python3 -m ml.cli dspark stop                 # stops both cluster nodes
+python3 -m ml.cli qwen38-flash-next stop      # stops Qwen on both cluster nodes
+python3 -m ml.cli glm53-flash stop            # stops GLM Ray/vLLM on both nodes
 python3 -m ml.cli dspark-one stop             # stops the independent one-Spark service
 ```
 
@@ -398,7 +516,8 @@ Backends bind port 8000 by default, so ordinary profiles still need to be stoppe
 starting another. The DGX co-serving profile above is the explicit exception: it uses
 loopback ports 8101–8103, capped registry entries, `--allow-co-resident`, and a router on
 public port 8000. vLLM and llama.cpp share `data/server.json`; Docker vLLM, Transformers
-vision, the router, NIM, and DSpark have separate state and lifecycle commands.
+vision, the router, NIM, and the DSpark/Qwen cluster recipes have separate state
+and lifecycle commands.
 
 ---
 
@@ -435,6 +554,8 @@ No code changes — register a model with provider `openai`, the base URL above,
 | Model requires a dedicated/custom vLLM image | **Docker vLLM** |
 | Want NVIDIA-tuned TensorRT-LLM kernels and NVFP4 on Blackwell | **NIM** |
 | DeepSeek V4 Flash 0731 across two linked GB10 nodes | **DSpark cluster** |
+| Qwen3.8 Flash Next NVFP4 at 900K across two linked GB10 nodes | **Qwen Flash Next** |
+| Experimental GLM-5.3 Flash NVFP4 at 32K across two linked GB10 nodes | **GLM Flash** |
 | DeepSeek V4 Flash 0731 on one dedicated GB10 at 384K | **DSpark One** |
 | Fine-tuning | none — stop the server, run `Makefile.gb10` |
 
@@ -452,7 +573,7 @@ registry edit — no code changes.
 
 | File | Backend | Key fields |
 |------|---------|-----------|
-| [registry/models.yaml](registry/models.yaml) | vLLM / Docker vLLM / Transformers vision | `hf_id`, `serve_backend`, `docker_image`, `vision_config`, `max_model_len`, `quantization`, `gpu_memory_utilization`, `max_num_seqs`, `max_num_batched_tokens`, `enable_prefix_caching`, `enable_chunked_prefill`, `speculative_config`, `reasoning_parser`, `tool_call_parser`, `enable_auto_tool_choice`, `language_model_only`, `rope_scaling`, `loras`, `extra_args` |
+| [registry/models.yaml](registry/models.yaml) | vLLM / Docker vLLM / Transformers vision / cluster recipes | `hf_id`, `serve_backend`, `docker_image`, `vision_config`, `external_recipe`, `max_model_len`, `quantization`, `gpu_memory_utilization`, `max_num_seqs`, `max_num_batched_tokens`, `enable_prefix_caching`, `enable_chunked_prefill`, `speculative_config`, `reasoning_parser`, `tool_call_parser`, `enable_auto_tool_choice`, `language_model_only`, `rope_scaling`, `loras`, `extra_args` |
 | [registry/llama_models.yaml](registry/llama_models.yaml) | llama.cpp | `hf_repo` or `gguf_path`, `n_gpu_layers`, `ctx_size`, `served_name`, `extra_args` |
 | [registry/nim_catalog.yaml](registry/nim_catalog.yaml) | NIM | `image`, `model_name`, `gpu_count`, `extra_env` |
 | [registry/router.yaml](registry/router.yaml) | Single-port router | `host`, `port`, `backends`, `models`, `served_model`, `path_routes` |
@@ -474,6 +595,8 @@ tuning. A representative slice of what's registered:
 | `gemma4-31b-it-nvfp4` | NVIDIA NVFP4, 64k text profile for DGX Spark — **Blackwell only** |
 | `gemma4-31b-it-fp8` | 31B via runtime FP8 quant — GB10-sized |
 | `qwen2.5-coder-32b` (llama.cpp) | Q8_0 GGUF with `--jinja` — real tool calling for agentic coders |
+| `qwen3.8-flash-next-nvfp4-dspark` | Dual-Spark SGLang TP2, SM121 QSA patch, 900K YaRN profile |
+| `glm-5.3-flash-nvfp4-dspark` | Experimental dual-Spark Ray TP2, Marlin/eager, 32K profile |
 | `deepseek-v4-flash-0731-dspark-one` | One-Spark TP=1 EXL3 recipe, 384K single-request profile |
 
 Adding an entry:
@@ -762,6 +885,52 @@ reported by `/v1/models`; `.env.local` supplies the local `API_KEY` when present
 Override `VLLM_MODEL`, `VLLM_TOKENIZER`, `CONCURRENCIES`, `NUM_PROMPTS`,
 `NUM_WARMUPS`, `INPUT_LEN`, `OUTPUT_LEN`, or `RESULT_DIR` as needed.
 
+### Compare two coding models
+
+The two-endpoint comparison runner measures five quality dimensions and produces
+a self-contained HTML report plus auditable JSON. It uses pinned HumanEval+,
+CRUXEval, NL2Bash, and BFCL v4 inputs. Code planning and the documentation part
+of analysis use transparent custom rubrics because the external benchmarks do
+not directly measure those requested behaviors.
+
+```bash
+cp config/model-compare.example.yaml config/model-compare.yaml
+# Edit endpoint URLs, model IDs, labels, and API-key environment variable names.
+
+# Put these in the shell environment or the ignored .env.local file.
+export MODEL_A_API_KEY='...'
+export MODEL_B_API_KEY='...'
+
+# Optional: verify downloads, checksums, and deterministic case selection only.
+python3 scripts/compare_models.py --config config/model-compare.yaml --prepare-only
+
+# Run both models sequentially against the exact same cases.
+python3 scripts/compare_models.py --config config/model-compare.yaml
+```
+
+Generated HumanEval+ code runs only inside a networkless, read-only Docker
+container with CPU, memory, process, and time limits. On first use, the runner
+builds `docker/model-compare-eval/Dockerfile`, which pins NumPy for the EvalPlus
+tests. Startup verifies that NumPy imports successfully and stops with an
+infrastructure error if the evaluator is incomplete, rather than recording
+false model failures. The runner also refuses to run the comparison if Docker
+is unavailable; generated Bash commands are scored but never executed. API keys
+and custom header values are read at runtime and are not saved. Reports are
+written to `data/model-comparisons/` by default, with bar charts for every
+quality dimension, decode throughput, effective full-run tokens/second, time to
+first token, latency, case errors, source revisions, and dataset SHA-256 hashes.
+
+`benchmark.tool_mode: prompt` is the portable default for orchestration. Set it
+to `native` only when both endpoints implement compatible OpenAI tool calling;
+the selected mode is prominent in the report.
+
+The common output budget defaults to `max_tokens_per_request: 16384`. Set it to
+`null` to omit `max_tokens`; the endpoint may still enforce a server-side cap.
+Reasoning controls are not assumed because APIs use different schemas. Put
+provider-specific fields under each model's `request_body` (for example,
+`reasoning_effort: high` or `chat_template_kwargs: {thinking: false}`). These
+fields are sent verbatim and recorded in the report.
+
 ### NIM
 
 ```bash
@@ -840,15 +1009,23 @@ ml-compute/
 │   ├── llama_models.yaml       GGUF aliases
 │   ├── nim_catalog.yaml        NIM container catalog
 │   ├── router.yaml             public model IDs → internal backend URLs
-│   ├── dspark_proxy.yaml       private vLLM → safe public endpoint
+│   ├── dspark_proxy.yaml       private cluster API → safe public endpoint
 │   ├── datasets.yaml           Fine-tuning dataset aliases
 │   └── apis.yaml               Hosted-provider model lists (teacher models)
 ├── config/
+│   ├── dspark-spark4e89-thinkstationpgx.env   dual-Spark DeepSeek profile
+│   ├── dspark-qwen38-flash-next-nvfp4.env     dual-Spark Qwen 900K profile
+│   ├── dspark-glm53-flash-nvfp4.env            dual-Spark GLM 32K profile
 │   └── dspark-one-deepseek-v4-flash-0731.env  one-Spark 384K profile
 ├── Makefile.gb10               LoRA fine-tuning on DGX Spark (bf16, HF+PEFT+TRL)
 ├── Makefile.distill            Distillation data pipeline (+ x86 QLoRA train)
 ├── Makefile.qwen{,9b}          QLoRA recipes for a 32 GB RTX PRO 4500 box
 ├── scripts/
+│   ├── DS4-Flash-DSpark.sh         dual-Spark DeepSeek lifecycle
+│   ├── Qwen38-Flash-Next-Dual-DSpark.sh dual-Spark Qwen lifecycle
+│   ├── start-Qwen38-Flash-Next-Dual-DSpark.sh Qwen first-run/start wrapper
+│   ├── GLM53-Flash-Dual-DSpark.sh  dual-Spark GLM Ray/vLLM lifecycle
+│   ├── start-GLM53-Flash-Dual-DSpark.sh GLM first-run/start wrapper
 │   ├── DS4-Flash-One-DSpark.sh     one-Spark lifecycle + safety checks
 │   ├── start-DS4-Flash-One-DSpark.sh first-run / normal-start wrapper
 │   ├── train_gemma4_12b_gb10.sh   Detached (setsid+nohup) 12B run
