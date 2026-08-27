@@ -79,7 +79,7 @@ COMMON WORKFLOWS
 \b
   Two-node Ray/vLLM serving (GLM-5.3 Flash NVFP4, experimental GB10):
     ml.cli glm53-flash setup              # configure and check both nodes
-    ml.cli glm53-flash pull               # pinned dedicated arm64 image
+    ml.cli glm53-flash pull               # pinned arm64 base + Ray runtime layer
     ml.cli glm53-flash download           # download + mirror 181 GiB weights
     ml.cli glm53-flash start              # Ray TP=2 + safety proxy
 

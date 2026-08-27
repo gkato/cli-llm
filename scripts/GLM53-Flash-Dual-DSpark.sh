@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # GLM-5.3 Flash NVFP4 on two linked DGX Sparks (GB10 / SM121).
 #
-# The model currently requires its dedicated arm64 vLLM image. This lifecycle
-# follows vLLM/NVIDIA's two-node Ray pattern, pins the image and model revision,
-# mirrors the checkpoint, and keeps the raw API behind ml-compute's proxy.
+# The model currently requires its dedicated arm64 vLLM image, which does not
+# include Ray. This lifecycle builds a pinned Ray layer on that image, follows
+# vLLM/NVIDIA's two-node pattern, mirrors the checkpoint, and keeps the raw API
+# behind ml-compute's proxy.
 
 if [ -z "${BASH_VERSION:-}" ]; then
   exec bash "$0" "$@"
@@ -18,8 +19,11 @@ PROJECT_ENV_FILE_DEFAULT="${PROJECT_ROOT}/.env.local"
 
 MODEL_ID_DEFAULT="LibertAIDAI/GLM-5.3-Flash-NVFP4"
 MODEL_REVISION_DEFAULT="11d73216cd636238e82e1d77fe1042ffab36e7fa"
-VLLM_IMAGE_DEFAULT="vllm/vllm-openai:glm53-flash-arm64-cu130@sha256:905c02933be6021301db2dc284e24e3727467aa3a0f63b41d609885778a07bce"
+VLLM_BASE_IMAGE_DEFAULT="vllm/vllm-openai:glm53-flash-arm64-cu130@sha256:905c02933be6021301db2dc284e24e3727467aa3a0f63b41d609885778a07bce"
+VLLM_IMAGE_DEFAULT="ml-compute/glm53-flash-ray:ray-2.48.0"
+RAY_VERSION_DEFAULT="2.48.0"
 VLLM_CLUSTER_REFERENCE="51c1ee9b7c8acbba4899a8ebffd390685d171946"
+RUNTIME_DOCKERFILE="${PROJECT_ROOT}/docker/glm53-flash-ray/Dockerfile"
 
 PROFILE_FILE="${GLM53_DSPARK_CONFIG_FILE:-${PROFILE_FILE_DEFAULT}}"
 RUNTIME_DIR="${GLM53_DSPARK_RUNTIME_DIR:-${RUNTIME_DIR_DEFAULT}}"
@@ -48,7 +52,7 @@ Actions:
   configure    Validate and materialize the resolved ml-compute profile
   check        Validate both GB10 nodes, RoCE/SSH, memory, disk, and API key
   setup        Run configure and check
-  pull         Pull the digest-pinned dedicated vLLM image on both nodes
+  pull         Pull the pinned base and build the Ray-enabled image on both nodes
   download     Download the pinned ~181 GiB snapshot and rsync it to the worker
   gpu-check    Initialize CUDA and import vLLM in the image on both nodes
   start        Start Ray, launch vLLM TP=2, then expose the safety proxy
@@ -64,6 +68,7 @@ Actions:
 
 Reviewed bring-up profile:
   - two GB10 nodes, Ray + vLLM tensor parallelism TP=2
+  - publisher arm64 image plus pinned Ray 2.48.0/cgraph runtime layer
   - 32K context, one sequence, 0.84 UMA fraction per node
   - Marlin MoE fallback + eager execution for SM121 compatibility
   - model-native glm47 tools, glm45 reasoning, in-checkpoint MTP=5
@@ -123,7 +128,9 @@ DSPARK_PROXY_PORT|8000
 MODEL_ID|${MODEL_ID_DEFAULT}
 MODEL_REVISION|${MODEL_REVISION_DEFAULT}
 SERVED_MODEL_NAME|GLM-5.3-Flash-NVFP4
+VLLM_BASE_IMAGE|${VLLM_BASE_IMAGE_DEFAULT}
 VLLM_IMAGE|${VLLM_IMAGE_DEFAULT}
+RAY_VERSION|${RAY_VERSION_DEFAULT}
 TENSOR_PARALLEL_SIZE|2
 MAX_MODEL_LEN|32768
 MAX_NUM_SEQS|1
@@ -168,7 +175,9 @@ DSPARK_PROXY_PORT
 MODEL_ID
 MODEL_REVISION
 SERVED_MODEL_NAME
+VLLM_BASE_IMAGE
 VLLM_IMAGE
+RAY_VERSION
 TENSOR_PARALLEL_SIZE
 MAX_MODEL_LEN
 MAX_NUM_SEQS
@@ -214,8 +223,12 @@ validate_profile() {
     || warn "MODEL_ID differs from the reviewed GLM checkpoint"
   [[ "${MODEL_REVISION}" == "${MODEL_REVISION_DEFAULT}" ]] \
     || warn "MODEL_REVISION differs from the reviewed checkpoint pin"
+  [[ "${VLLM_BASE_IMAGE}" == "${VLLM_BASE_IMAGE_DEFAULT}" ]] \
+    || warn "VLLM_BASE_IMAGE differs from the reviewed dedicated arm64 manifest"
   [[ "${VLLM_IMAGE}" == "${VLLM_IMAGE_DEFAULT}" ]] \
-    || warn "VLLM_IMAGE differs from the reviewed dedicated arm64 manifest"
+    || warn "VLLM_IMAGE differs from the reviewed Ray-enabled local image"
+  [[ "${RAY_VERSION}" == "${RAY_VERSION_DEFAULT}" ]] \
+    || die "RAY_VERSION must remain ${RAY_VERSION_DEFAULT} for the reviewed vLLM executor"
 }
 
 configure() {
@@ -289,6 +302,17 @@ worker_docker() {
     quoted+=("$(printf '%q' "${arg}")")
   done
   wrun "docker ${quoted[*]}"
+}
+
+worker_docker_build() {
+  local quoted=() arg
+  for arg in build \
+    --build-arg "BASE_IMAGE=${VLLM_BASE_IMAGE}" \
+    --build-arg "RAY_VERSION=${RAY_VERSION}" \
+    --tag "${VLLM_IMAGE}" -; do
+    quoted+=("$(printf '%q' "${arg}")")
+  done
+  wrun "docker ${quoted[*]}" <"${RUNTIME_DOCKERFILE}"
 }
 
 remote_home() {
@@ -397,15 +421,37 @@ check_host() {
 
 ensure_image() {
   validate_profile
-  if docker image inspect "${VLLM_IMAGE}" >/dev/null 2>&1; then
-    log "Dedicated GLM image present on head"
+  [[ -f "${RUNTIME_DOCKERFILE}" ]] || die "Missing runtime Dockerfile: ${RUNTIME_DOCKERFILE}"
+
+  if docker image inspect "${VLLM_BASE_IMAGE}" >/dev/null 2>&1; then
+    log "Pinned GLM base image present on head"
   else
-    docker pull "${VLLM_IMAGE}"
+    docker pull "${VLLM_BASE_IMAGE}"
   fi
-  if worker_docker image inspect "${VLLM_IMAGE}" >/dev/null 2>&1; then
-    log "Dedicated GLM image present on worker"
+  if worker_docker image inspect "${VLLM_BASE_IMAGE}" >/dev/null 2>&1; then
+    log "Pinned GLM base image present on worker"
   else
-    worker_docker pull "${VLLM_IMAGE}"
+    worker_docker pull "${VLLM_BASE_IMAGE}"
+  fi
+
+  local head_ray worker_ray
+  head_ray="$(docker image inspect --format '{{ index .Config.Labels "org.ml-compute.ray.version" }}' "${VLLM_IMAGE}" 2>/dev/null || true)"
+  if [[ "${head_ray}" == "${RAY_VERSION}" ]]; then
+    log "Ray-enabled GLM image present on head (Ray ${head_ray})"
+  else
+    log "Building Ray-enabled GLM image on head (Ray ${RAY_VERSION})"
+    docker build \
+      --build-arg "BASE_IMAGE=${VLLM_BASE_IMAGE}" \
+      --build-arg "RAY_VERSION=${RAY_VERSION}" \
+      --tag "${VLLM_IMAGE}" - <"${RUNTIME_DOCKERFILE}"
+  fi
+
+  worker_ray="$(worker_docker image inspect --format '{{ index .Config.Labels "org.ml-compute.ray.version" }}' "${VLLM_IMAGE}" 2>/dev/null || true)"
+  if [[ "${worker_ray}" == "${RAY_VERSION}" ]]; then
+    log "Ray-enabled GLM image present on worker (Ray ${worker_ray})"
+  else
+    log "Building Ray-enabled GLM image on worker (Ray ${RAY_VERSION})"
+    worker_docker_build
   fi
 }
 
@@ -749,9 +795,10 @@ case "${action}" in
   all) configure; check_host; ensure_image; download_model; gpu_check; start_service ;;
   path)
     load_profile
-    printf 'profile=%s\nruntime=%s\nhf_home=%s\nlog=%s\nmodel_revision=%s\nimage=%s\nvllm_cluster_reference=%s\n' \
+    printf 'profile=%s\nruntime=%s\nhf_home=%s\nlog=%s\nmodel_revision=%s\nbase_image=%s\nimage=%s\nray_version=%s\nruntime_dockerfile=%s\nvllm_cluster_reference=%s\n' \
       "${PROFILE_FILE}" "${RUNTIME_DIR}" "${HF_HOME}" "${VLLM_LOG}" \
-      "${MODEL_REVISION}" "${VLLM_IMAGE}" "${VLLM_CLUSTER_REFERENCE}"
+      "${MODEL_REVISION}" "${VLLM_BASE_IMAGE}" "${VLLM_IMAGE}" \
+      "${RAY_VERSION}" "${RUNTIME_DOCKERFILE}" "${VLLM_CLUSTER_REFERENCE}"
     ;;
   help|-h|--help) usage ;;
   *) die "Unknown action: ${action}. Run glm53-flash help" ;;

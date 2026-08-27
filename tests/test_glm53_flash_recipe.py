@@ -14,6 +14,7 @@ ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts" / "GLM53-Flash-Dual-DSpark.sh"
 STARTER = ROOT / "scripts" / "start-GLM53-Flash-Dual-DSpark.sh"
 PROFILE = ROOT / "config" / "dspark-glm53-flash-nvfp4.env"
+DOCKERFILE = ROOT / "docker" / "glm53-flash-ray" / "Dockerfile"
 
 
 def profile_values() -> dict[str, str]:
@@ -40,6 +41,12 @@ class GLM53FlashRecipeTests(unittest.TestCase):
         self.assertEqual(profile["MOE_BACKEND"], "marlin")
         self.assertEqual(profile["ENFORCE_EAGER"], "1")
         self.assertEqual(profile["MTP_SPECULATIVE_TOKENS"], "5")
+        self.assertEqual(profile["RAY_VERSION"], "2.48.0")
+        self.assertEqual(
+            profile["VLLM_IMAGE"],
+            "ml-compute/glm53-flash-ray:ray-2.48.0",
+        )
+        self.assertIn("@sha256:", profile["VLLM_BASE_IMAGE"])
         self.assertEqual(profile["GLM53_MIN_AVAILABLE_GIB"], "112")
         self.assertEqual(profile["GLM53_MIN_DISK_GIB"], "240")
 
@@ -61,7 +68,20 @@ class GLM53FlashRecipeTests(unittest.TestCase):
             model["model_revision"],
             "11d73216cd636238e82e1d77fe1042ffab36e7fa",
         )
-        self.assertIn("@sha256:", model["runtime_image"])
+        self.assertEqual(model["ray_version"], "2.48.0")
+        self.assertEqual(
+            model["runtime_image"],
+            "ml-compute/glm53-flash-ray:ray-2.48.0",
+        )
+        self.assertIn("@sha256:", model["runtime_base_image"])
+
+    def test_runtime_layer_adds_the_pinned_ray_executor(self):
+        dockerfile = DOCKERFILE.read_text(encoding="utf-8")
+
+        self.assertIn("ARG RAY_VERSION=2.48.0", dockerfile)
+        self.assertIn('ray[cgraph,default]==${RAY_VERSION}', dockerfile)
+        self.assertIn("import ray; import vllm", dockerfile)
+        self.assertIn("org.ml-compute.ray.version", dockerfile)
 
     def test_lifecycle_uses_ray_tp2_and_proxy_boundary(self):
         script = SCRIPT.read_text(encoding="utf-8")
@@ -71,6 +91,8 @@ class GLM53FlashRecipeTests(unittest.TestCase):
             script,
         )
         self.assertIn("ray start --block --head", script)
+        self.assertIn("worker_docker_build", script)
+        self.assertIn("RUNTIME_DOCKERFILE", script)
         self.assertIn("--distributed-executor-backend ray", script)
         self.assertIn("--tensor-parallel-size", script)
         self.assertIn('[[ "${HOST_BIND}" == "127.0.0.1" ]]', script)
