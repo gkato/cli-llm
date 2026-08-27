@@ -397,8 +397,9 @@ python3 -m ml.cli qwen38-flash-next stop
 
 The GLM path serves
 [`LibertAIDAI/GLM-5.3-Flash-NVFP4`](https://huggingface.co/LibertAIDAI/GLM-5.3-Flash-NVFP4),
-a roughly 181 GiB, multimodal 320B/18B-active MoE. It uses the checkpoint's
-digest-pinned dedicated arm64/CUDA 13 vLLM image and the
+a roughly 181 GiB, multimodal 320B/18B-active MoE. It layers pinned Ray 2.48.0
+onto the checkpoint's digest-pinned dedicated arm64/CUDA 13 vLLM image, then
+uses the
 [official vLLM two-node Ray topology](https://github.com/vllm-project/vllm/blob/51c1ee9b7c8acbba4899a8ebffd390685d171946/examples/ray_serving/run_cluster.sh)
 with tensor parallelism `TP=2`.
 
@@ -409,6 +410,12 @@ publisher's GB10 fallback—Marlin MoE with eager execution—plus 32K context,
 one sequence, a 0.84 UMA fraction, and at least 112 GiB `MemAvailable` on each
 Spark. It preserves the model-native `glm47` tool parser, `glm45` reasoning
 parser, and five-token in-checkpoint MTP speculation.
+
+The publisher image does not bundle Ray. The `pull` action therefore builds
+`ml-compute/glm53-flash-ray:ray-2.48.0` from the pinned publisher image on both
+nodes. The checked-in layer installs `ray[cgraph,default]==2.48.0`; do not
+replace it with an unpinned latest Ray because newer releases have shown vLLM
+multi-node executor incompatibilities.
 
 Run on the head Spark:
 
