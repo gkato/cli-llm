@@ -41,10 +41,10 @@ class GLM53FlashRecipeTests(unittest.TestCase):
         self.assertEqual(profile["MOE_BACKEND"], "marlin")
         self.assertEqual(profile["ENFORCE_EAGER"], "1")
         self.assertEqual(profile["MTP_SPECULATIVE_TOKENS"], "5")
-        self.assertEqual(profile["RAY_VERSION"], "2.48.0")
+        self.assertEqual(profile["RAY_VERSION"], "2.55.1")
         self.assertEqual(
             profile["VLLM_IMAGE"],
-            "ml-compute/glm53-flash-ray:ray-2.48.0",
+            "ml-compute/glm53-flash-ray:ray-2.55.1",
         )
         self.assertIn("@sha256:", profile["VLLM_BASE_IMAGE"])
         self.assertEqual(profile["GLM53_MIN_AVAILABLE_GIB"], "112")
@@ -68,17 +68,17 @@ class GLM53FlashRecipeTests(unittest.TestCase):
             model["model_revision"],
             "11d73216cd636238e82e1d77fe1042ffab36e7fa",
         )
-        self.assertEqual(model["ray_version"], "2.48.0")
+        self.assertEqual(model["ray_version"], "2.55.1")
         self.assertEqual(
             model["runtime_image"],
-            "ml-compute/glm53-flash-ray:ray-2.48.0",
+            "ml-compute/glm53-flash-ray:ray-2.55.1",
         )
         self.assertIn("@sha256:", model["runtime_base_image"])
 
     def test_runtime_layer_adds_the_pinned_ray_executor(self):
         dockerfile = DOCKERFILE.read_text(encoding="utf-8")
 
-        self.assertIn("ARG RAY_VERSION=2.48.0", dockerfile)
+        self.assertIn("ARG RAY_VERSION=2.55.1", dockerfile)
         self.assertIn('ray[cgraph,default]==${RAY_VERSION}', dockerfile)
         self.assertIn("import ray; import vllm", dockerfile)
         self.assertIn("org.ml-compute.ray.version", dockerfile)
@@ -100,6 +100,8 @@ class GLM53FlashRecipeTests(unittest.TestCase):
         self.assertIn("run_proxy_cli serve", script)
         self.assertIn("run_proxy_cli smoke", script)
         self.assertIn("Tailscale Funnel targets unauthenticated raw port", script)
+        self.assertIn("show_failure_diagnostics", script)
+        self.assertIn("/tmp/ray/session_latest/logs", script)
 
     def test_first_run_stages_every_required_artifact(self):
         starter = STARTER.read_text(encoding="utf-8")

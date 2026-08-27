@@ -397,7 +397,7 @@ python3 -m ml.cli qwen38-flash-next stop
 
 The GLM path serves
 [`LibertAIDAI/GLM-5.3-Flash-NVFP4`](https://huggingface.co/LibertAIDAI/GLM-5.3-Flash-NVFP4),
-a roughly 181 GiB, multimodal 320B/18B-active MoE. It layers pinned Ray 2.48.0
+a roughly 181 GiB, multimodal 320B/18B-active MoE. It layers pinned Ray 2.55.1
 onto the checkpoint's digest-pinned dedicated arm64/CUDA 13 vLLM image, then
 uses the
 [official vLLM two-node Ray topology](https://github.com/vllm-project/vllm/blob/51c1ee9b7c8acbba4899a8ebffd390685d171946/examples/ray_serving/run_cluster.sh)
@@ -412,10 +412,12 @@ Spark. It preserves the model-native `glm47` tool parser, `glm45` reasoning
 parser, and five-token in-checkpoint MTP speculation.
 
 The publisher image does not bundle Ray. The `pull` action therefore builds
-`ml-compute/glm53-flash-ray:ray-2.48.0` from the pinned publisher image on both
-nodes. The checked-in layer installs `ray[cgraph,default]==2.48.0`; do not
-replace it with an unpinned latest Ray because newer releases have shown vLLM
-multi-node executor incompatibilities.
+`ml-compute/glm53-flash-ray:ray-2.55.1` from the pinned publisher image on both
+nodes. The checked-in layer installs `ray[cgraph,default]==2.55.1`. Ray 2.54+
+contains the [stale-actor crash fix](https://github.com/ray-project/ray/pull/59425):
+older Ray aborts in C++ during vLLM's late cleanup and hides the earlier,
+actionable EngineCore error. The remaining cleanup issue is documented in
+[vLLM PR #45328](https://github.com/vllm-project/vllm/pull/45328).
 
 Run on the head Spark:
 
@@ -448,6 +450,7 @@ DeepSeek before using the same pair for GLM:
 
 ```bash
 python3 -m ml.cli glm53-flash status
+python3 -m ml.cli glm53-flash diagnose
 python3 -m ml.cli glm53-flash memory
 python3 -m ml.cli glm53-flash logs
 python3 -m ml.cli glm53-flash logs-worker

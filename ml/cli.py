@@ -1070,8 +1070,8 @@ def qwen38_flash_next_cmd(action: str):
 
 GLM53_FLASH_ACTIONS = [
     "configure", "check", "setup", "pull", "download", "gpu-check", "start",
-    "status", "memory", "smoke", "logs", "logs-worker", "stop", "all",
-    "path", "help",
+    "status", "diagnose", "memory", "smoke", "logs", "logs-worker", "stop",
+    "all", "path", "help",
 ]
 
 
