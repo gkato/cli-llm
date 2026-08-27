@@ -266,6 +266,8 @@ validate_profile() {
     || die "ENFORCE_EAGER must remain enabled on GB10 UMA"
   [[ "${SKIP_MM_PROFILING}" == "1" ]] \
     || die "SKIP_MM_PROFILING must remain enabled; the max-size MM dummy forward OOMs UMA"
+  [[ "${LIMIT_MM}" == '{"image":4,"video":1}' ]] \
+    || die 'LIMIT_MM must remain valid JSON: {"image":4,"video":1}'
   (( MTP_SPECULATIVE_TOKENS >= 0 && MTP_SPECULATIVE_TOKENS <= 4 )) \
     || die "MTP_SPECULATIVE_TOKENS must be between 0 and MiaAI's reviewed value 4"
   [[ "${RAY_VERSION}" == "${RAY_VERSION_DEFAULT}" ]] \
@@ -655,13 +657,45 @@ download_model() {
   pin_model_refs
 }
 
+materialize_upstream_launcher() {
+  local source="${RECIPE_DIR}/start.sh"
+  local target="${RECIPE_DIR}/.ml-compute-start.sh"
+  local tmp
+  [[ -f "${source}" ]] || die "Pinned upstream launcher is missing: ${source}"
+  tmp="$(mktemp "${RECIPE_DIR}/.ml-compute-start.XXXXXX")"
+  if ! awk '
+    BEGIN { limit_mm = 0; host = 0; eager = 0 }
+    /^LIMIT_MM="\$\{LIMIT_MM:-/ {
+      print "LIMIT_MM=\"${LIMIT_MM:-}\""
+      limit_mm++
+      next
+    }
+    /^[[:space:]]+--host 0\.0\.0\.0$/ {
+      print "    --host \"${HOST_BIND:-0.0.0.0}\""
+      host++
+      next
+    }
+    /ARGS\+=\(--moe-backend marlin --enforce-eager\)/ {
+      sub(/ --enforce-eager/, "")
+      eager++
+    }
+    { print }
+    END { if (limit_mm != 1 || host != 1 || eager != 1) exit 42 }
+  ' "${source}" >"${tmp}"; then
+    rm -f "${tmp}"
+    die "Pinned MiaAI launcher no longer matches the reviewed adapter patches"
+  fi
+  chmod +x "${tmp}"
+  mv "${tmp}" "${target}"
+}
+
 run_upstream() (
   check_recipe_pin
   validate_profile
-  local target remote_root private_args
+  materialize_upstream_launcher
+  local target remote_root
   target="$(worker_ssh_target)"
   remote_root="$(worker_home)"
-  private_args="${EXTRA_ARGS:+${EXTRA_ARGS} }--host ${HOST_BIND}"
   cd "${RECIPE_DIR}"
   IMAGE="${VLLM_IMAGE}" \
   RAY_VERSION="${RAY_VERSION}" \
@@ -677,6 +711,7 @@ run_upstream() (
   RAY_OBJECT_STORE_MEMORY="${RAY_OBJECT_STORE_MEMORY}" \
   TP="${TENSOR_PARALLEL_SIZE}" \
   PORT="${PORT}" \
+  HOST_BIND="${HOST_BIND}" \
   MTP_TOKENS="${MTP_SPECULATIVE_TOKENS}" \
   MAX_MODEL_LEN="${MAX_MODEL_LEN}" \
   GPU_MEM_UTIL="${GPU_MEMORY_UTILIZATION}" \
@@ -705,9 +740,9 @@ run_upstream() (
   HF_HUB_OFFLINE=1 \
   SKIP_DOWNLOAD=1 \
   SKIP_SYNC=1 \
-  EXTRA_ARGS="${private_args}" \
+  EXTRA_ARGS="${EXTRA_ARGS}" \
   TAIL=0 \
-  ./start.sh "$@"
+  ./.ml-compute-start.sh "$@"
 )
 
 run_proxy_cli() {
