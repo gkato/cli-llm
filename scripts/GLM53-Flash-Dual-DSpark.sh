@@ -32,6 +32,8 @@ PROJECT_ENV_FILE="${GLM53_DSPARK_PROJECT_ENV_FILE:-${PROJECT_ENV_FILE_DEFAULT}}"
 LOG_DIR="${RUNTIME_DIR}/logs"
 VLLM_LOG="${LOG_DIR}/vllm.log"
 RESOLVED_ENV="${RUNTIME_DIR}/.env.glm53"
+VLLM_PID_FILE="/tmp/ml-compute-glm53-vllm.pid"
+VLLM_EXIT_FILE="/tmp/ml-compute-glm53-vllm.exit"
 
 log() { printf '[glm53-flash] %s\n' "$*"; }
 warn() { printf '[glm53-flash] WARNING: %s\n' "$*" >&2; }
@@ -659,7 +661,7 @@ start_ray_cluster() {
 }
 
 launch_vllm() {
-  local command
+  local attempt command launcher
   local args=(
     vllm serve "$(container_snapshot_path)"
     --served-model-name "${SERVED_MODEL_NAME}"
@@ -685,8 +687,51 @@ launch_vllm() {
   printf -v command '%q ' "${args[@]}"
   : >"${VLLM_LOG}"
   log "Launching GLM vLLM TP=2 through Ray"
+  printf -v launcher \
+    'rm -f %q %q; ( exec %s) >>/ml-compute-logs/vllm.log 2>&1 & child=$!; printf "%%s\\n" "$child" >%q; wait "$child"; status=$?; printf "%%s\\n" "$status" >%q; exit "$status"' \
+    "${VLLM_PID_FILE}" "${VLLM_EXIT_FILE}" "${command}" \
+    "${VLLM_PID_FILE}" "${VLLM_EXIT_FILE}"
   docker exec -d "${GLM53_HEAD_CONTAINER}" /bin/bash -lc \
-    "exec ${command} >>/ml-compute-logs/vllm.log 2>&1"
+    "${launcher}"
+
+  for attempt in $(seq 1 50); do
+    if vllm_process_running; then
+      log "vLLM launcher PID $(vllm_pid) is running"
+      return
+    fi
+    if vllm_exit_status >/dev/null; then
+      sleep 2
+      show_failure_diagnostics
+      die "vLLM exited with status $(vllm_exit_status) during launch"
+    fi
+    sleep 0.1
+  done
+  show_failure_diagnostics
+  die "vLLM launcher did not publish a live PID within 5 seconds"
+}
+
+vllm_pid() {
+  local pid
+  pid="$(docker exec "${GLM53_HEAD_CONTAINER}" /bin/bash -lc \
+    "cat '${VLLM_PID_FILE}' 2>/dev/null" 2>/dev/null || true)"
+  [[ "${pid}" =~ ^[0-9]+$ ]] || return 1
+  printf '%s\n' "${pid}"
+}
+
+vllm_process_running() {
+  local pid
+  vllm_exit_status >/dev/null 2>&1 && return 1
+  pid="$(vllm_pid)" || return 1
+  docker exec "${GLM53_HEAD_CONTAINER}" /bin/bash -lc \
+    "kill -0 '${pid}'" >/dev/null 2>&1
+}
+
+vllm_exit_status() {
+  local status
+  status="$(docker exec "${GLM53_HEAD_CONTAINER}" /bin/bash -lc \
+    "cat '${VLLM_EXIT_FILE}' 2>/dev/null" 2>/dev/null || true)"
+  [[ "${status}" =~ ^[0-9]+$ ]] || return 1
+  printf '%s\n' "${status}"
 }
 
 wait_ready() {
@@ -697,14 +742,15 @@ wait_ready() {
       log "Raw GLM API is ready on ${HOST_BIND}:${PORT}"
       return
     fi
-    if ! docker exec "${GLM53_HEAD_CONTAINER}" pgrep -f '[v]llm serve' >/dev/null 2>&1; then
-      tail -n 320 "${VLLM_LOG}" || true
+    if ! vllm_process_running; then
+      # Let the launcher persist the child's status and let Ray flush worker
+      # stderr before collecting diagnostics.
+      sleep 2
       show_failure_diagnostics
-      die "vLLM exited before readiness"
+      die "vLLM exited with status $(vllm_exit_status 2>/dev/null || printf unknown) before readiness"
     fi
     now="$(date +%s)"
     if (( now >= deadline )); then
-      tail -n 320 "${VLLM_LOG}" || true
       show_failure_diagnostics
       die "vLLM did not become ready within ${VLLM_ENGINE_READY_TIMEOUT_S} seconds"
     fi
@@ -713,11 +759,20 @@ wait_ready() {
 }
 
 show_failure_diagnostics() {
-  local scan
+  local pid scan status
   scan='root=/tmp/ray/session_latest/logs; [ -d "$root" ] || exit 0; find "$root" -maxdepth 1 -type f \( -name "worker-*.err" -o -name "worker-*.out" -o -name "python-core-worker-*.log" \) -size +0c -printf "%T@ %p\\n" | sort -n | tail -n 16 | cut -d" " -f2- | while IFS= read -r file; do printf "\\n===== %s =====\\n" "$file"; tail -n 160 "$file"; done'
 
   printf '\nHead vLLM driver log:\n'
   tail -n 400 "${VLLM_LOG}" 2>&1 || true
+  pid="$(vllm_pid 2>/dev/null || true)"
+  status="$(vllm_exit_status 2>/dev/null || true)"
+  printf '\nvLLM launcher state: pid=%s running=%s exit_status=%s\n' \
+    "${pid:-unknown}" "$([[ -n "${pid}" ]] && vllm_process_running && printf yes || printf no)" \
+    "${status:-pending}"
+  if [[ -n "${pid}" ]]; then
+    docker exec "${GLM53_HEAD_CONTAINER}" ps -p "${pid}" -o pid=,ppid=,stat=,etime=,args= \
+      2>&1 || true
+  fi
   printf '\nGLM runtime versions (head):\n'
   docker exec "${GLM53_HEAD_CONTAINER}" python3 -c \
     'import ray, vllm; print("vllm", vllm.__version__, "ray", ray.__version__)' \
