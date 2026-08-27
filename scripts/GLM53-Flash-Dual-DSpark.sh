@@ -82,8 +82,8 @@ Reviewed MiaAI profile:
   - raw unauthenticated API on 127.0.0.1:8888 only
   - authenticated allow-list proxy on 0.0.0.0:8000
 
-The previous RayExecutorV2 layer is intentionally not used: it reused actor
-handles across Ray jobs during EngineCore initialization on this vLLM build.
+The pinned vLLM build selects its built-in Ray executor. ml-compute does not
+force the legacy VLLM_USE_RAY_V2_EXECUTOR_BACKEND environment override.
 EOF
 }
 
@@ -413,6 +413,66 @@ worker_docker() {
   wrun "docker ${quoted[*]}"
 }
 
+local_netdev_for_ip() {
+  local wanted="$1"
+  ip -o -4 addr show | awk -v wanted="${wanted}" '
+    { split($4, address, "/") }
+    address[1] == wanted { print $2; exit }
+  '
+}
+
+worker_netdev_for_ip() {
+  local wanted="$1"
+  wrun "ip -o -4 addr show" | awk -v wanted="${wanted}" '
+    { split($4, address, "/") }
+    address[1] == wanted { print $2; exit }
+  '
+}
+
+local_hca_for_netdev() {
+  local netdev="$1" path
+  for path in /sys/class/infiniband/*/device/net/"${netdev}"; do
+    [[ -e "${path}" ]] || continue
+    basename "$(dirname "$(dirname "$(dirname "${path}")")")"
+    return
+  done
+}
+
+worker_hca_for_netdev() {
+  local netdev="$1"
+  wrun "for path in /sys/class/infiniband/*/device/net/'${netdev}'; do [ -e \"\$path\" ] || continue; basename \"\$(dirname \"\$(dirname \"\$(dirname \"\$path\")\")\")\"; break; done"
+}
+
+resolve_cluster_interfaces() {
+  local head_netdev worker_netdev head_hca worker_hca
+  head_netdev="$(local_netdev_for_ip "${HEAD_CX7_IP}")"
+  worker_netdev="$(worker_netdev_for_ip "${WORKER_CX7_IP}")"
+  [[ -n "${head_netdev}" ]] \
+    || die "No head interface owns configured address ${HEAD_CX7_IP}"
+  [[ -n "${worker_netdev}" ]] \
+    || die "No worker interface owns configured address ${WORKER_CX7_IP}"
+
+  head_hca="$(local_hca_for_netdev "${head_netdev}")"
+  worker_hca="$(worker_hca_for_netdev "${worker_netdev}")"
+  [[ -n "${head_hca}" ]] \
+    || die "No head RDMA HCA maps to ${head_netdev} (${HEAD_CX7_IP})"
+  [[ -n "${worker_hca}" ]] \
+    || die "No worker RDMA HCA maps to ${worker_netdev} (${WORKER_CX7_IP})"
+
+  if [[ "${HEAD_CX7_IF}" != "${head_netdev}" || "${HEAD_CX7_IB}" != "${head_hca}" ]]; then
+    warn "Head RoCE mapping detected as ${head_netdev}/${head_hca}; profile had ${HEAD_CX7_IF}/${HEAD_CX7_IB}"
+  fi
+  if [[ "${WORKER_CX7_IF}" != "${worker_netdev}" || "${WORKER_CX7_IB}" != "${worker_hca}" ]]; then
+    warn "Worker RoCE mapping detected as ${worker_netdev}/${worker_hca}; profile had ${WORKER_CX7_IF}/${WORKER_CX7_IB}"
+  fi
+  HEAD_CX7_IF="${head_netdev}"
+  WORKER_CX7_IF="${worker_netdev}"
+  HEAD_CX7_IB="${head_hca}"
+  WORKER_CX7_IB="${worker_hca}"
+  export HEAD_CX7_IF WORKER_CX7_IF HEAD_CX7_IB WORKER_CX7_IB
+  log "RoCE mapping: head ${HEAD_CX7_IP}=${HEAD_CX7_IF}/${HEAD_CX7_IB}, worker ${WORKER_CX7_IP}=${WORKER_CX7_IF}/${WORKER_CX7_IB}"
+}
+
 remote_home() {
   wrun 'printf %s "$HOME"'
 }
@@ -521,6 +581,7 @@ check_host() {
   need_cmd curl
   need_cmd rsync
   need_cmd ssh
+  need_cmd ip
   need_cmd nvidia-smi
   [[ "$(uname -m)" == "aarch64" ]] \
     || die "The pinned runtime is arm64-only; head reports $(uname -m)"
@@ -531,6 +592,7 @@ check_host() {
   worker_docker info >/dev/null 2>&1 || die "Docker daemon is unavailable on the worker"
   wrun "nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | grep -q GB10" \
     || die "NVIDIA GB10 was not detected on the worker"
+  resolve_cluster_interfaces
   ping -c 1 -W 2 "${WORKER_CX7_IP}" >/dev/null 2>&1 \
     || die "Direct RoCE address ${WORKER_CX7_IP} is unreachable from the head"
   check_disk
@@ -692,6 +754,7 @@ materialize_upstream_launcher() {
 run_upstream() (
   check_recipe_pin
   validate_profile
+  resolve_cluster_interfaces
   materialize_upstream_launcher
   local target remote_root
   target="$(worker_ssh_target)"

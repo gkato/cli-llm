@@ -406,8 +406,9 @@ MiaAI's image patches the publisher's dedicated arm64/CUDA 13 vLLM build for
 GB10/SM121: capability 12 selects the SM90 NoPE sparse-MLA implementation with
 FlashInfer FA2, PDL is disabled on SM12x, and the sparse indexer/K-pool paths
 receive the validated bounds fixes. The serving layer installs Ray 2.58.0
-without the `cgraph` extra. The previous RayExecutorV2 approach is not used;
-that path reused actor handles across Ray jobs during EngineCore startup.
+without the `cgraph` extra. The pinned vLLM build selects its built-in
+RayExecutorV2 implementation; ml-compute does not force the older
+`VLLM_USE_RAY_V2_EXECUTOR_BACKEND` environment override.
 
 The checked-in profile follows MiaAI's measured values: a 4 GiB Ray object
 store per UMA node, 0.84 GPU-memory utilization, 256K context, eight sequences,
@@ -436,6 +437,8 @@ scripts/start-GLM53-Flash-Dual-DSpark.sh --first-run
 The upstream revision, model/image pins, RoCE addresses, Ray settings, and
 memory guards are in
 [`config/dspark-glm53-flash-nvfp4.env`](config/dspark-glm53-flash-nvfp4.env).
+At launch, the adapter resolves the actual netdev and RDMA HCA owning each
+configured RoCE IP, so the two Sparks do not need identical interface names.
 The lifecycle implementation is
 [`scripts/GLM53-Flash-Dual-DSpark.sh`](scripts/GLM53-Flash-Dual-DSpark.sh).
 The upstream checkout and generated images live under ignored `data/dspark/`.

@@ -85,7 +85,8 @@ class GLM53FlashRecipeTests(unittest.TestCase):
             "ml-compute/glm53-flash-sm121:mm-ray-v1-aed98a1",
         )
         self.assertEqual(model["runtime_kernel_patch"], "sm121-sm90-nope-fa2")
-        self.assertFalse(model["ray_executor_v2"])
+        self.assertTrue(model["ray_executor_v2"])
+        self.assertEqual(model["ray_executor_selection"], "runtime_default")
         self.assertIn("@sha256:", model["runtime_base_image"])
 
     def test_lifecycle_pins_upstream_kernel_and_proxy_boundary(self):
@@ -106,6 +107,9 @@ class GLM53FlashRecipeTests(unittest.TestCase):
         self.assertIn("SKIP_MM_PROFILING", script)
         self.assertIn("sm121_nope_patch=1", script)
         self.assertIn("materialize_upstream_launcher", script)
+        self.assertIn("resolve_cluster_interfaces", script)
+        self.assertIn("local_netdev_for_ip", script)
+        self.assertIn("worker_hca_for_netdev", script)
         self.assertIn("HOST_BIND:-0.0.0.0", script)
         self.assertIn("LIMIT_MM:-", script)
         self.assertIn("sub(/ --enforce-eager/", script)
