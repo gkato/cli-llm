@@ -20,8 +20,8 @@ PROJECT_ENV_FILE_DEFAULT="${PROJECT_ROOT}/.env.local"
 MODEL_ID_DEFAULT="LibertAIDAI/GLM-5.3-Flash-NVFP4"
 MODEL_REVISION_DEFAULT="11d73216cd636238e82e1d77fe1042ffab36e7fa"
 VLLM_BASE_IMAGE_DEFAULT="vllm/vllm-openai:glm53-flash-arm64-cu130@sha256:905c02933be6021301db2dc284e24e3727467aa3a0f63b41d609885778a07bce"
-VLLM_IMAGE_DEFAULT="ml-compute/glm53-flash-ray:ray-2.48.0"
-RAY_VERSION_DEFAULT="2.48.0"
+VLLM_IMAGE_DEFAULT="ml-compute/glm53-flash-ray:ray-2.55.1"
+RAY_VERSION_DEFAULT="2.55.1"
 VLLM_CLUSTER_REFERENCE="51c1ee9b7c8acbba4899a8ebffd390685d171946"
 RUNTIME_DOCKERFILE="${PROJECT_ROOT}/docker/glm53-flash-ray/Dockerfile"
 
@@ -57,6 +57,7 @@ Actions:
   gpu-check    Initialize CUDA and import vLLM in the image on both nodes
   start        Start Ray, launch vLLM TP=2, then expose the safety proxy
   status       Show Ray containers, cluster resources, raw API, and proxy state
+  diagnose     Print vLLM plus matching head/worker Ray error logs
   memory       Show shared-memory and GPU use on both nodes
   smoke        Verify proxy safety and perform one GLM completion
   logs         Follow the head vLLM server log
@@ -68,7 +69,7 @@ Actions:
 
 Reviewed bring-up profile:
   - two GB10 nodes, Ray + vLLM tensor parallelism TP=2
-  - publisher arm64 image plus pinned Ray 2.48.0/cgraph runtime layer
+  - publisher arm64 image plus pinned Ray 2.55.1/cgraph runtime layer
   - 32K context, one sequence, 0.84 UMA fraction per node
   - Marlin MoE fallback + eager execution for SM121 compatibility
   - model-native glm47 tools, glm45 reasoning, in-checkpoint MTP=5
@@ -678,16 +679,34 @@ wait_ready() {
       return
     fi
     if ! docker exec "${GLM53_HEAD_CONTAINER}" pgrep -f '[v]llm serve' >/dev/null 2>&1; then
-      tail -n 160 "${VLLM_LOG}" || true
+      tail -n 320 "${VLLM_LOG}" || true
+      show_failure_diagnostics
       die "vLLM exited before readiness"
     fi
     now="$(date +%s)"
     if (( now >= deadline )); then
-      tail -n 160 "${VLLM_LOG}" || true
+      tail -n 320 "${VLLM_LOG}" || true
+      show_failure_diagnostics
       die "vLLM did not become ready within ${VLLM_ENGINE_READY_TIMEOUT_S} seconds"
     fi
     sleep 15
   done
+}
+
+show_failure_diagnostics() {
+  local scan
+  scan='root=/tmp/ray/session_latest/logs; [ -d "$root" ] || exit 0; grep -Eil "Traceback|ERROR|Exception|OutOfMemory|CUDA|NCCL|failed|killed|SIGABRT" "$root"/*.err "$root"/*.out 2>/dev/null | tail -n 12 | while IFS= read -r file; do printf "\\n===== %s =====\\n" "$file"; tail -n 100 "$file"; done'
+
+  printf '\nGLM runtime versions (head):\n'
+  docker exec "${GLM53_HEAD_CONTAINER}" python3 -c \
+    'import ray, vllm; print("vllm", vllm.__version__, "ray", ray.__version__)' \
+    2>&1 || true
+  printf '\nRay cluster status:\n'
+  docker exec "${GLM53_HEAD_CONTAINER}" ray status 2>&1 || true
+  printf '\nMatching Ray error logs (head):\n'
+  docker exec "${GLM53_HEAD_CONTAINER}" /bin/bash -lc "${scan}" 2>&1 || true
+  printf '\nMatching Ray error logs (worker):\n'
+  worker_docker exec "${GLM53_WORKER_CONTAINER}" /bin/bash -lc "${scan}" 2>&1 || true
 }
 
 start_service() {
@@ -787,6 +806,7 @@ case "${action}" in
   gpu-check) gpu_check ;;
   start) start_service ;;
   status) load_profile; show_status ;;
+  diagnose) load_profile; show_failure_diagnostics ;;
   memory) load_profile; show_memory ;;
   smoke) load_profile; inference_smoke ;;
   logs) load_profile; touch "${VLLM_LOG}"; exec tail -n 100 -f "${VLLM_LOG}" ;;
