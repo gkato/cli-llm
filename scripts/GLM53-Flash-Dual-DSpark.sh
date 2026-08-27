@@ -78,7 +78,7 @@ Reviewed MiaAI profile:
   - Ray 2.58.0 default executor with a 4 GiB object store per UMA node
   - 256K context, 8 sequences, FP8 KV, block size 2304
   - Marlin MoE + eager execution and MM profiling disabled during boot
-  - glm47 tools, glm45 reasoning, in-checkpoint MTP=4
+  - glm47 tools and glm45 reasoning; unstable multi-step MTP disabled
   - raw unauthenticated API on 127.0.0.1:8888 only
   - authenticated allow-list proxy on 0.0.0.0:8000
 
@@ -151,7 +151,7 @@ MOE_BACKEND|marlin
 ENFORCE_EAGER|1
 TOOL_CALL_PARSER|glm47
 REASONING_PARSER|glm45
-MTP_SPECULATIVE_TOKENS|4
+MTP_SPECULATIVE_TOKENS|0
 LIMIT_MM|{"image":4,"video":1}
 SKIP_MM_PROFILING|1
 TORCH_CUDA_ARCH_LIST|12.1a
@@ -883,6 +883,21 @@ start_service() {
     run_proxy_cli stop || true
     die "Safety proxy checks failed; raw vLLM remains private on 127.0.0.1:${PORT}"
   fi
+  if ! inference_smoke; then
+    run_proxy_cli stop || true
+    show_failure_diagnostics
+    die "Post-start GLM completion failed"
+  fi
+  log "Watching EngineCore for 20 seconds after the first completion"
+  local attempt
+  for attempt in 1 2 3 4; do
+    sleep 5
+    if ! raw_model_ready; then
+      run_proxy_cli stop || true
+      show_failure_diagnostics
+      die "EngineCore exited after the first completion"
+    fi
+  done
   log "Public authenticated API: http://127.0.0.1:${DSPARK_PROXY_PORT}/v1"
   log "Raw unauthenticated API:  http://127.0.0.1:${PORT}/v1 (loopback only)"
 }

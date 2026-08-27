@@ -44,7 +44,7 @@ class GLM53FlashRecipeTests(unittest.TestCase):
         self.assertEqual(profile["MOE_BACKEND"], "marlin")
         self.assertEqual(profile["ENFORCE_EAGER"], "1")
         self.assertEqual(profile["SKIP_MM_PROFILING"], "1")
-        self.assertEqual(profile["MTP_SPECULATIVE_TOKENS"], "4")
+        self.assertEqual(profile["MTP_SPECULATIVE_TOKENS"], "0")
         self.assertEqual(profile["RAY_VERSION"], "2.58.0")
         self.assertEqual(profile["RAY_OBJECT_STORE_MEMORY"], "4294967296")
         self.assertEqual(
@@ -87,6 +87,8 @@ class GLM53FlashRecipeTests(unittest.TestCase):
         )
         self.assertEqual(model["runtime_kernel_patch"], "sm121-sm90-nope-fa2")
         self.assertEqual(model["kv_cache_memory_bytes"], 4294967296)
+        self.assertEqual(model["speculative_method"], "disabled")
+        self.assertEqual(model["speculative_tokens"], 0)
         self.assertTrue(model["ray_executor_v2"])
         self.assertEqual(model["ray_executor_selection"], "runtime_default")
         self.assertIn("@sha256:", model["runtime_base_image"])
@@ -121,6 +123,8 @@ class GLM53FlashRecipeTests(unittest.TestCase):
         self.assertIn("run_proxy_cli smoke", script)
         self.assertIn("Tailscale Funnel targets unauthenticated raw port", script)
         self.assertIn("show_failure_diagnostics", script)
+        self.assertIn("Watching EngineCore for 20 seconds", script)
+        self.assertIn("Post-start GLM completion failed", script)
         self.assertIn("/tmp/ray/session_latest/logs", script)
         self.assertNotIn("VLLM_USE_RAY_V2_EXECUTOR_BACKEND=1", script)
 

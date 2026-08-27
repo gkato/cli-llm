@@ -968,8 +968,8 @@ models:
     kv_cache_memory_bytes: 4294967296
     moe_backend: marlin
     enforce_eager: true
-    speculative_method: mtp
-    speculative_tokens: 4
+    speculative_method: disabled
+    speculative_tokens: 0
     tool_call_parser: glm47
     reasoning_parser: glm45
     multimodal: true
