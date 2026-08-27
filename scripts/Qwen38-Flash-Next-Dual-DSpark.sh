@@ -15,7 +15,7 @@ set -Eeuo pipefail
 
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 UPSTREAM_REPO_DEFAULT="https://github.com/MiaAI-Lab/Qwen3.8-Flash-Next-Dual-DGX-Sparks.git"
-UPSTREAM_REVISION_DEFAULT="dccb035c559f342fe8c0f65eb427671c6cf60730"
+UPSTREAM_REVISION_DEFAULT="f87d586e269df171089a879ee33a5356c0570e70"
 MODEL_REVISION_DEFAULT="7b719225242aacd3dbd3f9407468c2ee9a9d2594"
 BASE_IMAGE_DEFAULT="lmsysorg/sglang:qwen38flashnext@sha256:12d3392bdc8be8d35e9a95f191df6aef99c5114bdbefd41bfdc7e760e6d25ec1"
 RECIPE_DIR_DEFAULT="${PROJECT_ROOT}/data/dspark/miaai-qwen38-flash-next-dual-spark"
@@ -63,7 +63,8 @@ Actions:
 
 Reviewed profile:
   - two GB10 nodes, SGLang TP=2, ModelOpt NVFP4, in-checkpoint NEXTN 3/1/4
-  - 900K YaRN request ceiling, 1K prefill chunks, 0.82 UMA fraction
+  - full 1M YaRN request ceiling, NVFP4 KV, 1K prefill chunks, 0.79 UMA fraction
+  - 16-request ceiling and at least 20 GiB worker MemAvailable after launch
   - PLE n-gram embedding auto-offload and patched SM121 QSA attention
   - raw unauthenticated API on 127.0.0.1:8888 only
   - authenticated allow-list proxy on 0.0.0.0:8000
@@ -108,30 +109,34 @@ load_profile() {
     value="$(profile_value "${key}" "${fallback}")"
     export "${key}=${value}"
   done <<EOF
-HEAD_CX7_IP|10.0.22.1
-WORKER_CX7_IP|10.0.22.2
+HEAD_CX7_IP|192.168.177.10
+WORKER_CX7_IP|192.168.177.11
 HEAD_CX7_IF|enp1s0f1np1
 WORKER_CX7_IF|enp1s0f0np0
 HEAD_CX7_IB|rocep1s0f1
 WORKER_CX7_IB|rocep1s0f0
 WORKER_USER|
-WORKER_HOST|spark2
+WORKER_HOST|totalpass@192.168.177.11
 WORKER_SSH|
 HOST_BIND|127.0.0.1
 PORT|8888
 DIST_PORT|26400
 SERVED_MODEL_NAME|Qwen3.8-Flash-Next-NVFP4
-MEM_FRACTION_STATIC|0.82
-CONTEXT_LENGTH|262144
-QWEN38_EFFECTIVE_CONTEXT_LENGTH|900000
+MEM_FRACTION_STATIC|0.79
+CONTEXT_LENGTH|1048576
+QWEN38_EFFECTIVE_CONTEXT_LENGTH|1048576
 CHUNKED_PREFILL_SIZE|1024
+MAX_PREFILL_TOKENS|2048
 MAX_RUNNING_REQUESTS|16
+ALLOW_AUTO_TRUNCATE|0
+ALLOW_SHORT_KV_POOL|0
 SPEC_STEPS|3
 SPEC_TOPK|1
 SPEC_DRAFT|4
 ENABLE_DECODE_GRAPHS|1
 CUDA_GRAPH_BS|1 2 3 4 5 6 7 8 10 12 14 16
 ATTENTION_BACKEND|flashinfer
+NVFP4_KV_CACHE|1
 KV_CACHE_DTYPE|
 PLE_OFFLOAD|
 FP4_GEMM_BACKEND|
@@ -158,6 +163,7 @@ WORKER_HF_HOME|
 DSPARK_PROXY_HOST|0.0.0.0
 DSPARK_PROXY_PORT|8000
 QWEN38_MIN_AVAILABLE_GIB|112
+QWEN38_MIN_RUNTIME_AVAILABLE_GIB|20
 EOF
 }
 
@@ -179,13 +185,17 @@ SERVED_MODEL_NAME
 MEM_FRACTION_STATIC
 CONTEXT_LENGTH
 CHUNKED_PREFILL_SIZE
+MAX_PREFILL_TOKENS
 MAX_RUNNING_REQUESTS
+ALLOW_AUTO_TRUNCATE
+ALLOW_SHORT_KV_POOL
 SPEC_STEPS
 SPEC_TOPK
 SPEC_DRAFT
 ENABLE_DECODE_GRAPHS
 CUDA_GRAPH_BS
 ATTENTION_BACKEND
+NVFP4_KV_CACHE
 KV_CACHE_DTYPE
 PLE_OFFLOAD
 FP4_GEMM_BACKEND
@@ -297,9 +307,20 @@ validate_profile() {
   (( SPEC_DRAFT == SPEC_STEPS + 1 )) \
     || die "SPEC_DRAFT must equal SPEC_STEPS + 1"
   (( CHUNKED_PREFILL_SIZE <= 1024 )) \
-    || die "CHUNKED_PREFILL_SIZE above 1024 is unsafe for the reviewed 900K QSA profile"
-  awk -v value="${MEM_FRACTION_STATIC}" 'BEGIN {exit !(value <= 0.82)}' \
-    || die "MEM_FRACTION_STATIC above 0.82 can exhaust GB10 unified memory"
+    || die "CHUNKED_PREFILL_SIZE above 1024 is unsafe for the reviewed 1M QSA profile"
+  [[ "${CONTEXT_LENGTH}" == "1048576" \
+      && "${QWEN38_EFFECTIVE_CONTEXT_LENGTH}" == "1048576" ]] \
+    || die "CONTEXT_LENGTH and QWEN38_EFFECTIVE_CONTEXT_LENGTH must remain at the full 1048576-token profile"
+  [[ "${MAX_RUNNING_REQUESTS}" == "16" ]] \
+    || die "MAX_RUNNING_REQUESTS must remain 16 for the reviewed ml-compute profile"
+  [[ "${NVFP4_KV_CACHE}" == "1" && -z "${KV_CACHE_DTYPE}" ]] \
+    || die "NVFP4_KV_CACHE=1 with an empty KV_CACHE_DTYPE is required"
+  [[ "${ALLOW_AUTO_TRUNCATE}" == "0" ]] \
+    || die "ALLOW_AUTO_TRUNCATE must remain 0; over-length requests must fail instead of truncating"
+  [[ "${ALLOW_SHORT_KV_POOL}" == "0" ]] \
+    || die "ALLOW_SHORT_KV_POOL must remain 0; the KV pool must hold one full context"
+  awk -v value="${MEM_FRACTION_STATIC}" 'BEGIN {exit !(value <= 0.79)}' \
+    || die "MEM_FRACTION_STATIC above 0.79 violates the 20 GiB worker-memory reserve"
   [[ " ${EXTRA_ARGS} " != *" --host "* && " ${EXTRA_ARGS} " != *" --host="* ]] \
     || die "EXTRA_ARGS may not override the private raw host"
   [[ " ${EXTRA_ARGS} " != *" --port "* && " ${EXTRA_ARGS} " != *" --port="* ]] \
@@ -308,10 +329,10 @@ validate_profile() {
     || die "--load-format dummy can hard-freeze a GB10 node and is forbidden"
   [[ " ${EXTRA_ARGS} " != *" --no-ple-offload-embedding"* ]] \
     || die "Disabling PLE offload is unsafe on this GB10 profile"
-  [[ "${EXTRA_ARGS}" == *"--context-length ${QWEN38_EFFECTIVE_CONTEXT_LENGTH}"* ]] \
-    || warn "EXTRA_ARGS no longer installs the registered ${QWEN38_EFFECTIVE_CONTEXT_LENGTH}-token ceiling"
-  [[ "${EXTRA_ARGS}" == *"--json-model-override-args"* ]] \
-    || warn "EXTRA_ARGS no longer installs the reviewed YaRN model override"
+  [[ " ${EXTRA_ARGS} " != *" --context-length "* \
+      && " ${EXTRA_ARGS} " != *" --context-length="* \
+      && " ${EXTRA_ARGS} " != *" --json-model-override-args "* ]] \
+    || die "EXTRA_ARGS may not override the reviewed native 1M YaRN profile"
   [[ "${HF_REVISION}" == "${MODEL_REVISION_DEFAULT}" ]] \
     || warn "HF_REVISION differs from the reviewed model checkpoint"
   [[ "${BASE_IMAGE}" == "${BASE_IMAGE_DEFAULT}" ]] \
@@ -366,6 +387,22 @@ check_launch_memory() {
   awk -v have="${worker_available}" -v need="${required}" 'BEGIN {exit !(have >= need)}' \
     || die "Worker has ${worker_available} GiB MemAvailable; cold launch requires ${required} GiB"
   log "Cold-start memory: head ${head_available} GiB, worker ${worker_available} GiB (minimum ${required})"
+}
+
+check_runtime_memory_headroom() {
+  local worker_available required target
+  required="${QWEN38_MIN_RUNTIME_AVAILABLE_GIB}"
+  target="$(worker_ssh_target)"
+  worker_available="$(ssh -o ConnectTimeout=10 -o BatchMode=yes "${target}" \
+    "awk '/^MemAvailable:/ {printf \"%.3f\", \$2 / 1048576}' /proc/meminfo")"
+  if ! awk -v have="${worker_available}" -v need="${required}" \
+      'BEGIN {exit !(have >= need)}'; then
+    warn "Worker has ${worker_available} GiB MemAvailable after launch; policy requires ${required} GiB"
+    run_proxy_cli stop || true
+    run_upstream stop || true
+    die "Qwen launch rolled back to preserve the worker memory reserve"
+  fi
+  log "Runtime worker memory reserve passed: ${worker_available} GiB available (minimum ${required})"
 }
 
 check_host() {
@@ -423,6 +460,7 @@ start_service() {
     check_launch_memory
     run_upstream serve
   fi
+  check_runtime_memory_headroom
   run_proxy_cli serve
   if ! run_proxy_cli smoke; then
     run_proxy_cli stop || true
@@ -446,7 +484,7 @@ show_memory() {
   nvidia-smi || true
   printf '\nWorker memory (%s):\n' "${target}"
   ssh -o ConnectTimeout=10 -o BatchMode=yes "${target}" 'free -h; nvidia-smi' || true
-  warn "This 900K TP2 profile is dedicated to the Qwen cluster; stop other model workloads before launch"
+  warn "This 1M TP2 profile reserves at least 20 GiB on the worker; stop other model workloads before launch"
 }
 
 inference_smoke() (

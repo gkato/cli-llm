@@ -875,24 +875,24 @@ models:
   # with `python3 -m ml.cli qwen38-flash-next <action>`; it is intentionally
   # independent from the DeepSeek `dspark` lifecycle above.
   #
-  # The checked-in profile captures the upstream measured 900K YaRN setup:
-  # 0.82 UMA fraction, 1K QSA prefill chunks, PLE auto-offload, Mamba ratio
-  # 0.3, and in-checkpoint NEXTN 3/1/4. It must not share either Spark with
-  # another large model workload.
+  # The checked-in profile captures the upstream 1M YaRN + NVFP4 KV setup with
+  # a conservative 0.79 UMA fraction, 1K QSA prefill chunks, PLE auto-offload,
+  # Mamba ratio 0.3, NEXTN 3/1/4, and a 20 GiB worker-memory reserve. It must
+  # not share either Spark with another large model workload.
   qwen3.8-flash-next-nvfp4-dspark:
     hf_id: RadixArk/Qwen3.8-Flash-Next-NVFP4
     served_model_name: Qwen3.8-Flash-Next-NVFP4
     serve_backend: qwen38-flash-next
     external_recipe: scripts/Qwen38-Flash-Next-Dual-DSpark.sh
     upstream_repo: https://github.com/MiaAI-Lab/Qwen3.8-Flash-Next-Dual-DGX-Sparks
-    upstream_revision: dccb035c559f342fe8c0f65eb427671c6cf60730
+    upstream_revision: f87d586e269df171089a879ee33a5356c0570e70
     model_revision: 7b719225242aacd3dbd3f9407468c2ee9a9d2594
     nodes: 2
     tensor_parallel_size: 2
     runtime: sglang
     runtime_image: qwen38-flashnext-dspark:ml-compute
     runtime_base_image: lmsysorg/sglang:qwen38flashnext@sha256:12d3392bdc8be8d35e9a95f191df6aef99c5114bdbefd41bfdc7e760e6d25ec1
-    runtime_kernel_patch: sm121-qsa-triton-fallback
+    runtime_kernel_patch: sm121-qsa-triton-fallback+nvfp4-kv
     architecture: qwen4_exp
     parameters_total_billion: 176
     parameters_active_billion: 6
@@ -900,15 +900,16 @@ models:
     weight_format: nvfp4
     vram_gb: 191.2
     native_context_len: 262144
-    max_model_len: 900000
+    max_model_len: 1048576
     rope_scaling: yarn
     rope_scaling_factor: 4.0
     chunked_prefill_size: 1024
     max_num_seqs: 16
     effective_max_num_seqs: 14
     max_output_tokens: 32768
-    gpu_memory_utilization: 0.82
-    kv_cache_dtype: bfloat16
+    gpu_memory_utilization: 0.79
+    kv_cache_dtype: nvfp4
+    worker_memory_reserve_gib: 20
     mamba_full_memory_ratio: 0.3
     speculative_method: nextn
     speculative_steps: 3

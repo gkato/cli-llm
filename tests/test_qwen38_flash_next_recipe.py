@@ -27,22 +27,31 @@ def profile_values() -> dict[str, str]:
 
 
 class Qwen38FlashNextRecipeTests(unittest.TestCase):
-    def test_profile_preserves_measured_long_context_and_private_bind(self):
+    def test_profile_preserves_full_context_nvfp4_and_private_bind(self):
         profile = profile_values()
 
         self.assertEqual(profile["HOST_BIND"], "127.0.0.1")
         self.assertEqual(profile["PORT"], "8888")
         self.assertEqual(profile["DSPARK_PROXY_PORT"], "8000")
-        self.assertEqual(profile["MEM_FRACTION_STATIC"], "0.82")
-        self.assertEqual(profile["CONTEXT_LENGTH"], "262144")
-        self.assertEqual(profile["QWEN38_EFFECTIVE_CONTEXT_LENGTH"], "900000")
+        self.assertEqual(profile["HEAD_CX7_IP"], "192.168.177.10")
+        self.assertEqual(profile["WORKER_CX7_IP"], "192.168.177.11")
+        self.assertEqual(profile["WORKER_HOST"], "totalpass@192.168.177.11")
+        self.assertEqual(profile["MEM_FRACTION_STATIC"], "0.79")
+        self.assertEqual(profile["CONTEXT_LENGTH"], "1048576")
+        self.assertEqual(profile["QWEN38_EFFECTIVE_CONTEXT_LENGTH"], "1048576")
         self.assertEqual(profile["CHUNKED_PREFILL_SIZE"], "1024")
+        self.assertEqual(profile["MAX_PREFILL_TOKENS"], "2048")
+        self.assertEqual(profile["MAX_RUNNING_REQUESTS"], "16")
+        self.assertEqual(profile["NVFP4_KV_CACHE"], "1")
+        self.assertEqual(profile["KV_CACHE_DTYPE"], "")
+        self.assertEqual(profile["ALLOW_AUTO_TRUNCATE"], "0")
+        self.assertEqual(profile["ALLOW_SHORT_KV_POOL"], "0")
         self.assertEqual(profile["MAMBA_FULL_MEMORY_RATIO"], "0.3")
         self.assertEqual(profile["SPEC_STEPS"], "3")
         self.assertEqual(profile["SPEC_TOPK"], "1")
         self.assertEqual(profile["SPEC_DRAFT"], "4")
-        self.assertIn("--context-length 900000", profile["EXTRA_ARGS"])
-        self.assertIn('"rope_type":"yarn"', profile["EXTRA_ARGS"])
+        self.assertEqual(profile["EXTRA_ARGS"], "")
+        self.assertEqual(profile["QWEN38_MIN_RUNTIME_AVAILABLE_GIB"], "20")
 
     def test_registry_matches_pinned_sglang_recipe(self):
         model = get_models()["qwen3.8-flash-next-nvfp4-dspark"]
@@ -51,9 +60,17 @@ class Qwen38FlashNextRecipeTests(unittest.TestCase):
         self.assertEqual(model["nodes"], 2)
         self.assertEqual(model["tensor_parallel_size"], 2)
         self.assertEqual(model["runtime"], "sglang")
+        self.assertEqual(
+            model["runtime_kernel_patch"],
+            "sm121-qsa-triton-fallback+nvfp4-kv",
+        )
         self.assertEqual(model["quantization"], "modelopt_fp4")
-        self.assertEqual(model["max_model_len"], 900000)
+        self.assertEqual(model["max_model_len"], 1048576)
         self.assertEqual(model["chunked_prefill_size"], 1024)
+        self.assertEqual(model["max_num_seqs"], 16)
+        self.assertEqual(model["gpu_memory_utilization"], 0.79)
+        self.assertEqual(model["kv_cache_dtype"], "nvfp4")
+        self.assertEqual(model["worker_memory_reserve_gib"], 20)
         self.assertEqual(model["raw_api_url"], "http://127.0.0.1:8888")
         self.assertEqual(model["proxy_bind"], "0.0.0.0:8000")
         self.assertTrue(model["multimodal"])
@@ -61,7 +78,7 @@ class Qwen38FlashNextRecipeTests(unittest.TestCase):
         self.assertFalse(model["harness_coexistence"])
         self.assertEqual(
             model["upstream_revision"],
-            "dccb035c559f342fe8c0f65eb427671c6cf60730",
+            "f87d586e269df171089a879ee33a5356c0570e70",
         )
         self.assertEqual(
             model["model_revision"],
@@ -73,13 +90,17 @@ class Qwen38FlashNextRecipeTests(unittest.TestCase):
         script = SCRIPT.read_text(encoding="utf-8")
 
         self.assertIn(
-            'UPSTREAM_REVISION_DEFAULT="dccb035c559f342fe8c0f65eb427671c6cf60730"',
+            'UPSTREAM_REVISION_DEFAULT="f87d586e269df171089a879ee33a5356c0570e70"',
             script,
         )
         self.assertIn('[[ "${HOST_BIND}" == "127.0.0.1" ]]', script)
         self.assertIn('[[ "${KERNEL_PATCH}" == "1" ]]', script)
         self.assertIn("--load-format dummy can hard-freeze", script)
         self.assertIn("PLE_OFFLOAD=0 is unsafe", script)
+        self.assertIn('[[ "${NVFP4_KV_CACHE}" == "1"', script)
+        self.assertIn('[[ "${ALLOW_AUTO_TRUNCATE}" == "0" ]]', script)
+        self.assertIn("check_runtime_memory_headroom", script)
+        self.assertIn("Qwen launch rolled back", script)
         self.assertIn("run_proxy_cli serve", script)
         self.assertIn("run_proxy_cli smoke", script)
         self.assertIn("Tailscale Funnel targets unauthenticated raw port", script)

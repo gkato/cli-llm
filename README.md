@@ -337,7 +337,7 @@ BENCH_LABEL=miaai-512k scripts/bench_dspark_ab.sh full
 
 The Qwen path wraps
 [MiaAI-Lab's dual-DGX-Spark recipe](https://github.com/MiaAI-Lab/Qwen3.8-Flash-Next-Dual-DGX-Sparks)
-at pinned revision `dccb035c559f342fe8c0f65eb427671c6cf60730`. It serves the
+at pinned revision `f87d586e269df171089a879ee33a5356c0570e70`. It serves the
 pinned `RadixArk/Qwen3.8-Flash-Next-NVFP4` checkpoint: a multimodal 176B/6B-active
 MoE in ModelOpt NVFP4, using SGLang TP=2 and the model's in-checkpoint NEXTN
 draft. The adapter keeps the upstream-generated SM121 QSA Triton patch and JIT
@@ -366,13 +366,14 @@ and context profile are in
 The lifecycle adapter is
 [`scripts/Qwen38-Flash-Next-Dual-DSpark.sh`](scripts/Qwen38-Flash-Next-Dual-DSpark.sh).
 
-The committed profile captures MiaAI-Lab's measured 900K YaRN configuration:
-`MEM_FRACTION_STATIC=0.82`, 1K-token QSA prefill chunks, PLE auto-offload,
-Mamba full-memory ratio 0.3, and NEXTN `3/1/4`. `CONTEXT_LENGTH` intentionally
-stays at the native 262,144 value so upstream's conservative preflight passes;
-the reviewed 900K YaRN model override is appended last through `EXTRA_ARGS`.
-The wrapper rejects a memory fraction above 0.82, prefill chunks above 1024,
-public raw binds, disabled PLE offload, or a disabled kernel patch.
+The committed profile uses MiaAI-Lab's full 1,048,576-token YaRN path with
+NVFP4 KV cache, 1K-token QSA prefill chunks, PLE auto-offload, Mamba
+full-memory ratio 0.3, and NEXTN `3/1/4`. The request ceiling remains 16.
+`MEM_FRACTION_STATIC=0.79` plus a post-start `MemAvailable` guard preserves at
+least 20 GiB on the worker. Automatic prompt truncation and short-KV-pool
+overrides remain disabled, so the launch fails closed unless one full 1M
+request fits. The wrapper also rejects public raw binds, disabled PLE offload,
+or a disabled kernel patch.
 
 Do not add `--load-format dummy`: the upstream investigation found that the
 temporary FP16 copy of the PLE table can exhaust GB10 unified memory and
@@ -567,7 +568,7 @@ No code changes — register a model with provider `openai`, the base URL above,
 | Model requires a dedicated/custom vLLM image | **Docker vLLM** |
 | Want NVIDIA-tuned TensorRT-LLM kernels and NVFP4 on Blackwell | **NIM** |
 | DeepSeek V4 Flash 0731 across two linked GB10 nodes | **DSpark cluster** |
-| Qwen3.8 Flash Next NVFP4 at 900K across two linked GB10 nodes | **Qwen Flash Next** |
+| Qwen3.8 Flash Next NVFP4 at 1M across two linked GB10 nodes | **Qwen Flash Next** |
 | Experimental GLM-5.3 Flash NVFP4 at 32K across two linked GB10 nodes | **GLM Flash** |
 | DeepSeek V4 Flash 0731 on one dedicated GB10 at 384K | **DSpark One** |
 | Fine-tuning | none — stop the server, run `Makefile.gb10` |
@@ -608,7 +609,7 @@ tuning. A representative slice of what's registered:
 | `gemma4-31b-it-nvfp4` | NVIDIA NVFP4, 64k text profile for DGX Spark — **Blackwell only** |
 | `gemma4-31b-it-fp8` | 31B via runtime FP8 quant — GB10-sized |
 | `qwen2.5-coder-32b` (llama.cpp) | Q8_0 GGUF with `--jinja` — real tool calling for agentic coders |
-| `qwen3.8-flash-next-nvfp4-dspark` | Dual-Spark SGLang TP2, SM121 QSA patch, 900K YaRN profile |
+| `qwen3.8-flash-next-nvfp4-dspark` | Dual-Spark SGLang TP2, SM121 QSA + NVFP4-KV patch, 1M YaRN profile |
 | `glm-5.3-flash-nvfp4-dspark` | Experimental dual-Spark Ray TP2, Marlin/eager, 32K profile |
 | `deepseek-v4-flash-0731-dspark-one` | One-Spark TP=1 EXL3 recipe, 384K single-request profile |
 
@@ -1027,7 +1028,7 @@ ml-compute/
 │   └── apis.yaml               Hosted-provider model lists (teacher models)
 ├── config/
 │   ├── dspark-spark4e89-thinkstationpgx.env   dual-Spark DeepSeek profile
-│   ├── dspark-qwen38-flash-next-nvfp4.env     dual-Spark Qwen 900K profile
+│   ├── dspark-qwen38-flash-next-nvfp4.env     dual-Spark Qwen 1M NVFP4-KV profile
 │   ├── dspark-glm53-flash-nvfp4.env            dual-Spark GLM 32K profile
 │   └── dspark-one-deepseek-v4-flash-0731.env  one-Spark 384K profile
 ├── Makefile.gb10               LoRA fine-tuning on DGX Spark (bf16, HF+PEFT+TRL)
