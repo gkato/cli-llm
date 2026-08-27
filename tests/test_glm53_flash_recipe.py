@@ -108,6 +108,10 @@ class GLM53FlashRecipeTests(unittest.TestCase):
         self.assertIn("Tailscale Funnel targets unauthenticated raw port", script)
         self.assertIn("show_failure_diagnostics", script)
         self.assertIn("/tmp/ray/session_latest/logs", script)
+        self.assertIn("VLLM_PID_FILE", script)
+        self.assertIn("VLLM_EXIT_FILE", script)
+        self.assertIn("vllm_process_running", script)
+        self.assertNotIn("pgrep -f '[v]llm serve'", script)
 
     def test_first_run_stages_every_required_artifact(self):
         starter = STARTER.read_text(encoding="utf-8")
