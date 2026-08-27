@@ -948,7 +948,8 @@ models:
     runtime_kernel_patch: sm121-sm90-nope-fa2
     ray_version: 2.58.0
     ray_object_store_bytes: 4294967296
-    ray_executor_v2: false
+    ray_executor_v2: true
+    ray_executor_selection: runtime_default
     architecture: glm5_next
     parameters_total_billion: 320
     parameters_active_billion: 18
