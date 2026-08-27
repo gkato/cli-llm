@@ -393,34 +393,28 @@ python3 -m ml.cli qwen38-flash-next logs-worker
 python3 -m ml.cli qwen38-flash-next stop
 ```
 
-### GLM-5.3 Flash NVFP4 (two linked GB10 systems, experimental)
+### GLM-5.3 Flash NVFP4 (two linked GB10 systems)
 
 The GLM path serves
 [`LibertAIDAI/GLM-5.3-Flash-NVFP4`](https://huggingface.co/LibertAIDAI/GLM-5.3-Flash-NVFP4),
-a roughly 181 GiB, multimodal 320B/18B-active MoE. It layers pinned Ray 2.55.1
-onto the checkpoint's digest-pinned dedicated arm64/CUDA 13 vLLM image, then
-uses the
-[official vLLM two-node Ray topology](https://github.com/vllm-project/vllm/blob/51c1ee9b7c8acbba4899a8ebffd390685d171946/examples/ray_serving/run_cluster.sh)
-with tensor parallelism `TP=2`.
+a roughly 181 GiB, multimodal 320B/18B-active MoE. The lifecycle wraps
+[MiaAI-Lab's dual-DGX-Spark recipe](https://github.com/MiaAI-Lab/GLM-5.3-Flash-NVFP4-Dual-DGX-Spark)
+at pinned revision `aed98a13ca75140d2691cc5c651ea5817d9a3e44`, while retaining
+the existing `ml.cli glm53-flash` interface and safety proxy.
 
-This integration is deliberately marked **experimental**. The model publisher
-says the weights fit on two GB10 desktops, but does not list SM121 among its
-verified runtime targets. The checked-in bring-up profile therefore uses the
-publisher's GB10 fallback—Marlin MoE with eager execution—plus 32K context,
-one sequence, a 0.84 UMA fraction, and at least 112 GiB `MemAvailable` on each
-Spark. It preserves the model-native `glm47` tool parser, `glm45` reasoning
-parser, and five-token in-checkpoint MTP speculation.
+MiaAI's image patches the publisher's dedicated arm64/CUDA 13 vLLM build for
+GB10/SM121: capability 12 selects the SM90 NoPE sparse-MLA implementation with
+FlashInfer FA2, PDL is disabled on SM12x, and the sparse indexer/K-pool paths
+receive the validated bounds fixes. The serving layer installs Ray 2.58.0
+without the `cgraph` extra. The previous RayExecutorV2 approach is not used;
+that path reused actor handles across Ray jobs during EngineCore startup.
 
-The publisher image does not bundle Ray. The `pull` action therefore builds
-`ml-compute/glm53-flash-ray:ray-2.55.1-r2` from the pinned publisher image on
-both nodes. The checked-in layer installs `ray[default]==2.55.1` and explicitly
-uses RayExecutorV2. It does not install Ray's `cgraph` extra because that extra
-pulls `cupy-cuda12x`, conflicting with the publisher image's `cupy-cuda13x`.
-The build and GPU checks reject that mixed-CuPy state. Ray 2.54+
-contains the [stale-actor crash fix](https://github.com/ray-project/ray/pull/59425):
-older Ray aborts in C++ during vLLM's late cleanup and hides the earlier,
-actionable EngineCore error. The remaining cleanup issue is documented in
-[vLLM PR #45328](https://github.com/vllm-project/vllm/pull/45328).
+The checked-in profile follows MiaAI's measured values: a 4 GiB Ray object
+store per UMA node, 0.84 GPU-memory utilization, 256K context, eight sequences,
+FP8-E4M3 KV, block size 2304, Marlin MoE, eager execution, and skipped
+multimodal dummy profiling. It preserves `glm47` tools, `glm45` reasoning,
+image/video input, and four-token in-checkpoint MTP speculation. Cold launch
+still requires at least 112 GiB `MemAvailable` on each Spark.
 
 Run on the head Spark:
 
@@ -439,13 +433,14 @@ Or perform the complete initial staging and launch:
 scripts/start-GLM53-Flash-Dual-DSpark.sh --first-run
 ```
 
-The model revision, image digest, RoCE addresses, Ray settings, and memory
-guards are in
+The upstream revision, model/image pins, RoCE addresses, Ray settings, and
+memory guards are in
 [`config/dspark-glm53-flash-nvfp4.env`](config/dspark-glm53-flash-nvfp4.env).
 The lifecycle implementation is
 [`scripts/GLM53-Flash-Dual-DSpark.sh`](scripts/GLM53-Flash-Dual-DSpark.sh).
-The pinned snapshot is downloaded once on the head and rsynced to the worker;
-allow at least 240 GiB of free disk on both systems.
+The upstream checkout and generated images live under ignored `data/dspark/`.
+The pinned snapshot is reused from the existing cache and rsynced only when
+needed; allow at least 240 GiB of free disk on both systems.
 
 Like the other cluster recipes, raw vLLM binds only to `127.0.0.1:8888` and
 the authenticated allow-list proxy owns public port 8000. Stop Qwen or

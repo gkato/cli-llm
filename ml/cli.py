@@ -77,9 +77,9 @@ COMMON WORKFLOWS
     ml.cli qwen38-flash-next start        # worker-first TP=2 + safety proxy
 
 \b
-  Two-node Ray/vLLM serving (GLM-5.3 Flash NVFP4, experimental GB10):
-    ml.cli glm53-flash setup              # configure and check both nodes
-    ml.cli glm53-flash pull               # pinned arm64 base + Ray runtime layer
+  Two-node Ray/vLLM serving (GLM-5.3 Flash NVFP4, MiaAI GB10 recipe):
+    ml.cli glm53-flash setup              # pin MiaAI recipe + check both nodes
+    ml.cli glm53-flash pull               # build SM121/NoPE image + Ray 2.58
     ml.cli glm53-flash download           # download + mirror 181 GiB weights
     ml.cli glm53-flash start              # Ray TP=2 + safety proxy
 
@@ -127,7 +127,7 @@ def cli():
       • NIM       NVIDIA TensorRT-LLM container, Docker      →  `ml.cli nim serve <alias>`
       • DSpark    patched Docker vLLM, two GB10 nodes, TP=2  →  `ml.cli dspark <action>`
       • Qwen Next patched SGLang, two GB10 nodes, TP=2       →  `ml.cli qwen38-flash-next <action>`
-      • GLM Flash Ray + dedicated vLLM, two GB10 nodes, TP=2 →  `ml.cli glm53-flash <action>`
+      • GLM Flash MiaAI-patched vLLM, two GB10 nodes, TP=2   →  `ml.cli glm53-flash <action>`
       • DSpark One EXL3/SparkInfer, one GB10 node, TP=1      →  `ml.cli dspark-one <action>`
 
     Language-model backends expose an OpenAI-compatible /v1 API. The vision
@@ -1065,13 +1065,14 @@ def qwen38_flash_next_cmd(action: str):
 
 
 # ---------------------------------------------------------------------------
-# GLM-5.3 Flash — dedicated vLLM image over a two-node Ray cluster
+# GLM-5.3 Flash — MiaAI patched vLLM image over a two-node Ray cluster
 # ---------------------------------------------------------------------------
 
 GLM53_FLASH_ACTIONS = [
-    "configure", "check", "setup", "pull", "download", "gpu-check", "start",
+    "bootstrap", "configure", "check", "setup", "pull", "download",
+    "gpu-check", "start",
     "status", "diagnose", "memory", "smoke", "logs", "logs-worker", "stop",
-    "all", "path", "help",
+    "update", "all", "path", "help",
 ]
 
 
@@ -1086,10 +1087,10 @@ def glm53_flash_cmd(action: str):
     """Manage GLM-5.3 Flash NVFP4 across two linked DGX Sparks.
 
     \b
-    This is an experimental GB10/SM121 deployment using the model's dedicated
-    arm64 vLLM image and the official two-node Ray pattern. ml-compute pins the
-    model/image, mirrors weights to both nodes, and keeps raw vLLM on loopback
-    :8888 behind the authenticated safety proxy on :8000.
+    This delegates to MiaAI-Lab's SM121-patched vLLM/Ray TP=2 recipe while
+    ml-compute pins its revision, model, and base image. We mirror weights to
+    both nodes and keep raw vLLM on loopback :8888 behind the authenticated
+    safety proxy on :8000.
 
     \b
     Typical sequence:

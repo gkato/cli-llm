@@ -14,7 +14,6 @@ ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts" / "GLM53-Flash-Dual-DSpark.sh"
 STARTER = ROOT / "scripts" / "start-GLM53-Flash-Dual-DSpark.sh"
 PROFILE = ROOT / "config" / "dspark-glm53-flash-nvfp4.env"
-DOCKERFILE = ROOT / "docker" / "glm53-flash-ray" / "Dockerfile"
 
 
 def profile_values() -> dict[str, str]:
@@ -28,31 +27,34 @@ def profile_values() -> dict[str, str]:
 
 
 class GLM53FlashRecipeTests(unittest.TestCase):
-    def test_profile_is_two_spark_conservative_and_private(self):
+    def test_profile_matches_miaai_sm121_recipe_and_is_private(self):
         profile = profile_values()
 
         self.assertEqual(profile["TENSOR_PARALLEL_SIZE"], "2")
         self.assertEqual(profile["HOST_BIND"], "127.0.0.1")
         self.assertEqual(profile["PORT"], "8888")
         self.assertEqual(profile["DSPARK_PROXY_PORT"], "8000")
-        self.assertEqual(profile["MAX_MODEL_LEN"], "32768")
-        self.assertEqual(profile["MAX_NUM_SEQS"], "1")
+        self.assertEqual(profile["MAX_MODEL_LEN"], "262144")
+        self.assertEqual(profile["MAX_NUM_SEQS"], "8")
         self.assertEqual(profile["GPU_MEMORY_UTILIZATION"], "0.84")
+        self.assertEqual(profile["BLOCK_SIZE"], "2304")
+        self.assertEqual(profile["KV_CACHE_DTYPE"], "fp8_e4m3")
         self.assertEqual(profile["MOE_BACKEND"], "marlin")
         self.assertEqual(profile["ENFORCE_EAGER"], "1")
-        self.assertEqual(profile["MTP_SPECULATIVE_TOKENS"], "5")
-        self.assertEqual(profile["RAY_VERSION"], "2.55.1")
+        self.assertEqual(profile["SKIP_MM_PROFILING"], "1")
+        self.assertEqual(profile["MTP_SPECULATIVE_TOKENS"], "4")
+        self.assertEqual(profile["RAY_VERSION"], "2.58.0")
+        self.assertEqual(profile["RAY_OBJECT_STORE_MEMORY"], "4294967296")
         self.assertEqual(
             profile["VLLM_IMAGE"],
-            "ml-compute/glm53-flash-ray:ray-2.55.1-r2",
+            "ml-compute/glm53-flash-sm121:mm-ray-v1-aed98a1",
         )
-        self.assertEqual(profile["RUNTIME_LAYER_REVISION"], "2")
-        self.assertEqual(profile["VLLM_USE_RAY_V2_EXECUTOR_BACKEND"], "1")
+        self.assertNotIn("VLLM_USE_RAY_V2_EXECUTOR_BACKEND", profile)
         self.assertIn("@sha256:", profile["VLLM_BASE_IMAGE"])
         self.assertEqual(profile["GLM53_MIN_AVAILABLE_GIB"], "112")
         self.assertEqual(profile["GLM53_MIN_DISK_GIB"], "240")
 
-    def test_registry_matches_pinned_experimental_recipe(self):
+    def test_registry_matches_pinned_miaai_recipe(self):
         model = get_models()["glm-5.3-flash-nvfp4-dspark"]
 
         self.assertEqual(model["serve_backend"], "glm53-flash")
@@ -60,58 +62,57 @@ class GLM53FlashRecipeTests(unittest.TestCase):
         self.assertEqual(model["tensor_parallel_size"], 2)
         self.assertEqual(model["distributed_executor_backend"], "ray")
         self.assertEqual(model["runtime"], "vllm")
-        self.assertEqual(model["max_model_len"], 32768)
+        self.assertEqual(model["max_model_len"], 262144)
+        self.assertEqual(model["max_num_seqs"], 8)
         self.assertEqual(model["checkpoint_size_gib"], 181)
         self.assertEqual(model["moe_backend"], "marlin")
         self.assertTrue(model["enforce_eager"])
-        self.assertTrue(model["experimental"])
-        self.assertFalse(model["verified_on_gb10"])
+        self.assertFalse(model["experimental"])
+        self.assertTrue(model["verified_on_gb10"])
+        self.assertEqual(
+            model["upstream_revision"],
+            "aed98a13ca75140d2691cc5c651ea5817d9a3e44",
+        )
         self.assertEqual(
             model["model_revision"],
             "11d73216cd636238e82e1d77fe1042ffab36e7fa",
         )
-        self.assertEqual(model["ray_version"], "2.55.1")
+        self.assertEqual(model["ray_version"], "2.58.0")
+        self.assertEqual(model["ray_object_store_bytes"], 4294967296)
         self.assertEqual(
             model["runtime_image"],
-            "ml-compute/glm53-flash-ray:ray-2.55.1-r2",
+            "ml-compute/glm53-flash-sm121:mm-ray-v1-aed98a1",
         )
-        self.assertEqual(model["runtime_layer_revision"], 2)
-        self.assertTrue(model["ray_executor_v2"])
+        self.assertEqual(model["runtime_kernel_patch"], "sm121-sm90-nope-fa2")
+        self.assertFalse(model["ray_executor_v2"])
         self.assertIn("@sha256:", model["runtime_base_image"])
 
-    def test_runtime_layer_adds_the_pinned_ray_executor(self):
-        dockerfile = DOCKERFILE.read_text(encoding="utf-8")
-
-        self.assertIn("ARG RAY_VERSION=2.55.1", dockerfile)
-        self.assertIn('ray[default]==${RAY_VERSION}', dockerfile)
-        self.assertNotIn('ray[cgraph,default]', dockerfile)
-        self.assertIn('"cupy-cuda12x" not in names', dockerfile)
-        self.assertIn("import ray; import vllm", dockerfile)
-        self.assertIn("org.ml-compute.ray.version", dockerfile)
-
-    def test_lifecycle_uses_ray_tp2_and_proxy_boundary(self):
+    def test_lifecycle_pins_upstream_kernel_and_proxy_boundary(self):
         script = SCRIPT.read_text(encoding="utf-8")
 
+        self.assertIn(
+            'UPSTREAM_REVISION_DEFAULT="aed98a13ca75140d2691cc5c651ea5817d9a3e44"',
+            script,
+        )
         self.assertIn(
             'MODEL_REVISION_DEFAULT="11d73216cd636238e82e1d77fe1042ffab36e7fa"',
             script,
         )
-        self.assertIn("ray start --block --head", script)
-        self.assertIn("worker_docker_build", script)
-        self.assertIn("RUNTIME_DOCKERFILE", script)
-        self.assertIn("--distributed-executor-backend ray", script)
-        self.assertIn("--tensor-parallel-size", script)
+        self.assertIn("sync_recipe_pin", script)
+        self.assertIn("files/Dockerfile.mm-ray", script)
+        self.assertIn("org.ml-compute.upstream.revision", script)
+        self.assertIn("RAY_OBJECT_STORE_MEMORY", script)
+        self.assertIn("SKIP_MM_PROFILING", script)
+        self.assertIn("sm121_nope_patch=1", script)
         self.assertIn('[[ "${HOST_BIND}" == "127.0.0.1" ]]', script)
         self.assertIn('[[ "${MOE_BACKEND}" == "marlin" ]]', script)
+        self.assertIn("--host ${HOST_BIND}", script)
         self.assertIn("run_proxy_cli serve", script)
         self.assertIn("run_proxy_cli smoke", script)
         self.assertIn("Tailscale Funnel targets unauthenticated raw port", script)
         self.assertIn("show_failure_diagnostics", script)
         self.assertIn("/tmp/ray/session_latest/logs", script)
-        self.assertIn("VLLM_PID_FILE", script)
-        self.assertIn("VLLM_EXIT_FILE", script)
-        self.assertIn("vllm_process_running", script)
-        self.assertNotIn("pgrep -f '[v]llm serve'", script)
+        self.assertNotIn("VLLM_USE_RAY_V2_EXECUTOR_BACKEND=1", script)
 
     def test_first_run_stages_every_required_artifact(self):
         starter = STARTER.read_text(encoding="utf-8")

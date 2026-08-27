@@ -926,30 +926,29 @@ models:
     harness_coexistence: false
     cluster_profile: config/dspark-qwen38-flash-next-nvfp4.env
 
-  # GLM-5.3 Flash NVFP4 on two linked DGX Sparks. Unlike the Qwen entry, no
-  # publisher-tested dual-Spark wrapper exists yet: this uses vLLM's official
-  # two-node Ray topology with the checkpoint's dedicated arm64/CUDA 13 image.
-  # The model card says the ~181 GiB checkpoint fits across two GB10 systems,
-  # but does not list SM121 as verified. This entry is therefore an explicitly
-  # experimental 32K/one-request bring-up profile using Marlin + eager mode.
+  # GLM-5.3 Flash NVFP4 on two linked DGX Sparks. MiaAI-Lab's pinned recipe
+  # supplies the SM121/NoPE sparse-MLA kernel patch, Ray 2.58 TP=2 topology,
+  # and GB10 UMA/object-store profile. ml-compute retains the immutable model
+  # pin and keeps the raw API on loopback behind the authenticated proxy.
   glm-5.3-flash-nvfp4-dspark:
     hf_id: LibertAIDAI/GLM-5.3-Flash-NVFP4
-    served_model_name: GLM-5.3-Flash-NVFP4
+    served_model_name: LibertAIDAI/GLM-5.3-Flash-NVFP4
     serve_backend: glm53-flash
     external_recipe: scripts/GLM53-Flash-Dual-DSpark.sh
+    upstream_repo: https://github.com/MiaAI-Lab/GLM-5.3-Flash-NVFP4-Dual-DGX-Spark
+    upstream_revision: aed98a13ca75140d2691cc5c651ea5817d9a3e44
     model_card: https://huggingface.co/LibertAIDAI/GLM-5.3-Flash-NVFP4
     model_revision: 11d73216cd636238e82e1d77fe1042ffab36e7fa
-    cluster_reference: https://github.com/vllm-project/vllm/blob/51c1ee9b7c8acbba4899a8ebffd390685d171946/examples/ray_serving/run_cluster.sh
     nodes: 2
     tensor_parallel_size: 2
     distributed_executor_backend: ray
     runtime: vllm
-    runtime_image: ml-compute/glm53-flash-ray:ray-2.55.1-r2
+    runtime_image: ml-compute/glm53-flash-sm121:mm-ray-v1-aed98a1
     runtime_base_image: vllm/vllm-openai:glm53-flash-arm64-cu130@sha256:905c02933be6021301db2dc284e24e3727467aa3a0f63b41d609885778a07bce
-    runtime_dockerfile: docker/glm53-flash-ray/Dockerfile
-    ray_version: 2.55.1
-    runtime_layer_revision: 2
-    ray_executor_v2: true
+    runtime_kernel_patch: sm121-sm90-nope-fa2
+    ray_version: 2.58.0
+    ray_object_store_bytes: 4294967296
+    ray_executor_v2: false
     architecture: glm5_next
     parameters_total_billion: 320
     parameters_active_billion: 18
@@ -960,15 +959,15 @@ models:
     activation_dtype: bfloat16
     vram_gb: 204.5
     native_context_len: 1048576
-    max_model_len: 32768
-    max_num_seqs: 1
-    max_num_batched_tokens: 4096
+    max_model_len: 262144
+    max_num_seqs: 8
     gpu_memory_utilization: 0.84
-    kv_cache_dtype: auto
+    block_size: 2304
+    kv_cache_dtype: fp8_e4m3
     moe_backend: marlin
     enforce_eager: true
     speculative_method: mtp
-    speculative_tokens: 5
+    speculative_tokens: 4
     tool_call_parser: glm47
     reasoning_parser: glm45
     multimodal: true
@@ -979,8 +978,8 @@ models:
     proxy_bind: 0.0.0.0:8000
     proxy_url: http://127.0.0.1:8000
     default_thinking: true
-    experimental: true
-    verified_on_gb10: false
+    experimental: false
+    verified_on_gb10: true
     dedicated_cluster: true
     harness_coexistence: false
     cluster_profile: config/dspark-glm53-flash-nvfp4.env
