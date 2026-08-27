@@ -413,9 +413,11 @@ RayExecutorV2 implementation; ml-compute does not force the older
 The checked-in profile follows MiaAI's measured values: a 4 GiB Ray object
 store per UMA node, 0.84 GPU-memory utilization, 256K context, eight sequences,
 a fixed 4 GiB FP8-E4M3 KV pool per rank, block size 2304, Marlin MoE, eager execution, and skipped
-multimodal dummy profiling. It preserves `glm47` tools, `glm45` reasoning,
-image/video input, and four-token in-checkpoint MTP speculation. Cold launch
-still requires at least 112 GiB `MemAvailable` on each Spark.
+multimodal dummy profiling. It preserves `glm47` tools, `glm45` reasoning, and
+image/video input. Multi-step MTP is disabled in the stable profile because a
+successful first generation was followed by the rank-0 worker exiting. Cold
+launch still requires at least 112 GiB `MemAvailable` on each Spark. Startup
+performs a completion and watches EngineCore afterward before reporting ready.
 
 Run on the head Spark:
 
