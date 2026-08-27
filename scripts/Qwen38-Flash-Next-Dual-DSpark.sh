@@ -145,6 +145,7 @@ LINEAR_ATTN_DECODE_BACKEND|
 MAMBA_RADIX_CACHE_STRATEGY|extra_buffer
 MAMBA_TRACK_INTERVAL|64
 MAMBA_FULL_MEMORY_RATIO|0.3
+MAX_MAMBA_CACHE_SIZE|80
 REASONING_PARSER|auto
 TOOL_CALL_PARSER|auto
 CPUSET|5-9,15-19
@@ -204,6 +205,7 @@ LINEAR_ATTN_DECODE_BACKEND
 MAMBA_RADIX_CACHE_STRATEGY
 MAMBA_TRACK_INTERVAL
 MAMBA_FULL_MEMORY_RATIO
+MAX_MAMBA_CACHE_SIZE
 REASONING_PARSER
 TOOL_CALL_PARSER
 CPUSET
@@ -313,6 +315,8 @@ validate_profile() {
     || die "CONTEXT_LENGTH and QWEN38_EFFECTIVE_CONTEXT_LENGTH must remain at the full 1048576-token profile"
   [[ "${MAX_RUNNING_REQUESTS}" == "16" ]] \
     || die "MAX_RUNNING_REQUESTS must remain 16 for the reviewed ml-compute profile"
+  [[ "${MAX_MAMBA_CACHE_SIZE}" == "80" ]] \
+    || die "MAX_MAMBA_CACHE_SIZE must remain 80 so NEXTN can admit 16 requests at five state slots each"
   [[ "${NVFP4_KV_CACHE}" == "1" && -z "${KV_CACHE_DTYPE}" ]] \
     || die "NVFP4_KV_CACHE=1 with an empty KV_CACHE_DTYPE is required"
   [[ "${ALLOW_AUTO_TRUNCATE}" == "0" ]] \
@@ -325,6 +329,8 @@ validate_profile() {
     || die "EXTRA_ARGS may not override the private raw host"
   [[ " ${EXTRA_ARGS} " != *" --port "* && " ${EXTRA_ARGS} " != *" --port="* ]] \
     || die "EXTRA_ARGS may not override the private raw port"
+  [[ " ${EXTRA_ARGS} " != *" --api-key "* && " ${EXTRA_ARGS} " != *" --api-key="* ]] \
+    || die "EXTRA_ARGS may not key the loopback raw API; authentication belongs to the safety proxy"
   [[ " ${EXTRA_ARGS} " != *" --load-format dummy"* ]] \
     || die "--load-format dummy can hard-freeze a GB10 node and is forbidden"
   [[ " ${EXTRA_ARGS} " != *" --no-ple-offload-embedding"* ]] \
@@ -363,7 +369,7 @@ run_upstream() {
   # let the checked-in compatibility hints exported by validate_profile()
   # override that materialized mapping (upstream uses environment-first).
   (
-    unset HEAD_CX7_IF WORKER_CX7_IF HEAD_CX7_IB WORKER_CX7_IB
+    unset API_KEY HEAD_CX7_IF WORKER_CX7_IF HEAD_CX7_IB WORKER_CX7_IB
     cd "${RECIPE_DIR}" && ./start.sh "$@"
   )
 }

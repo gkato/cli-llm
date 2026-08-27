@@ -51,6 +51,7 @@ class Qwen38FlashNextRecipeTests(unittest.TestCase):
         self.assertEqual(profile["ALLOW_AUTO_TRUNCATE"], "0")
         self.assertEqual(profile["ALLOW_SHORT_KV_POOL"], "0")
         self.assertEqual(profile["MAMBA_FULL_MEMORY_RATIO"], "0.3")
+        self.assertEqual(profile["MAX_MAMBA_CACHE_SIZE"], "80")
         self.assertEqual(profile["SPEC_STEPS"], "3")
         self.assertEqual(profile["SPEC_TOPK"], "1")
         self.assertEqual(profile["SPEC_DRAFT"], "4")
@@ -75,6 +76,7 @@ class Qwen38FlashNextRecipeTests(unittest.TestCase):
         self.assertEqual(model["gpu_memory_utilization"], 0.79)
         self.assertEqual(model["kv_cache_dtype"], "nvfp4")
         self.assertEqual(model["worker_memory_reserve_gib"], 20)
+        self.assertEqual(model["max_mamba_cache_size"], 80)
         self.assertEqual(model["raw_api_url"], "http://127.0.0.1:8888")
         self.assertEqual(model["proxy_bind"], "0.0.0.0:8000")
         self.assertTrue(model["multimodal"])
@@ -103,6 +105,9 @@ class Qwen38FlashNextRecipeTests(unittest.TestCase):
         self.assertIn("PLE_OFFLOAD=0 is unsafe", script)
         self.assertIn('[[ "${NVFP4_KV_CACHE}" == "1"', script)
         self.assertIn('[[ "${ALLOW_AUTO_TRUNCATE}" == "0" ]]', script)
+        self.assertIn('[[ "${MAX_MAMBA_CACHE_SIZE}" == "80" ]]', script)
+        self.assertIn("unset API_KEY HEAD_CX7_IF", script)
+        self.assertIn("EXTRA_ARGS may not key the loopback raw API", script)
         self.assertIn("check_runtime_memory_headroom", script)
         self.assertIn("Qwen launch rolled back", script)
         self.assertIn("replacing any stale head/worker containers", script)
@@ -111,7 +116,7 @@ class Qwen38FlashNextRecipeTests(unittest.TestCase):
         self.assertIn("local_netdev_for_ip", script)
         self.assertIn("worker_hca_for_netdev", script)
         self.assertIn(
-            "unset HEAD_CX7_IF WORKER_CX7_IF HEAD_CX7_IB WORKER_CX7_IB",
+            "unset API_KEY HEAD_CX7_IF WORKER_CX7_IF HEAD_CX7_IB WORKER_CX7_IB",
             script,
         )
         self.assertIn("run_proxy_cli serve", script)
