@@ -40,6 +40,7 @@ class GLM53FlashRecipeTests(unittest.TestCase):
         self.assertEqual(profile["GPU_MEMORY_UTILIZATION"], "0.84")
         self.assertEqual(profile["BLOCK_SIZE"], "2304")
         self.assertEqual(profile["KV_CACHE_DTYPE"], "fp8_e4m3")
+        self.assertEqual(profile["KV_CACHE_MEMORY"], "4294967296")
         self.assertEqual(profile["MOE_BACKEND"], "marlin")
         self.assertEqual(profile["ENFORCE_EAGER"], "1")
         self.assertEqual(profile["SKIP_MM_PROFILING"], "1")
@@ -85,6 +86,7 @@ class GLM53FlashRecipeTests(unittest.TestCase):
             "ml-compute/glm53-flash-sm121:mm-ray-v1-aed98a1",
         )
         self.assertEqual(model["runtime_kernel_patch"], "sm121-sm90-nope-fa2")
+        self.assertEqual(model["kv_cache_memory_bytes"], 4294967296)
         self.assertTrue(model["ray_executor_v2"])
         self.assertEqual(model["ray_executor_selection"], "runtime_default")
         self.assertIn("@sha256:", model["runtime_base_image"])

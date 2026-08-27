@@ -965,6 +965,7 @@ models:
     gpu_memory_utilization: 0.84
     block_size: 2304
     kv_cache_dtype: fp8_e4m3
+    kv_cache_memory_bytes: 4294967296
     moe_backend: marlin
     enforce_eager: true
     speculative_method: mtp
