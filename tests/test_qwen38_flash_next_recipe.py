@@ -36,6 +36,10 @@ class Qwen38FlashNextRecipeTests(unittest.TestCase):
         self.assertEqual(profile["HEAD_CX7_IP"], "192.168.177.10")
         self.assertEqual(profile["WORKER_CX7_IP"], "192.168.177.11")
         self.assertEqual(profile["WORKER_HOST"], "totalpass@192.168.177.11")
+        self.assertEqual(profile["HEAD_CX7_IF"], "enp1s0f1np1")
+        self.assertEqual(profile["WORKER_CX7_IF"], "enp1s0f1np1")
+        self.assertEqual(profile["HEAD_CX7_IB"], "rocep1s0f1")
+        self.assertEqual(profile["WORKER_CX7_IB"], "rocep1s0f1")
         self.assertEqual(profile["MEM_FRACTION_STATIC"], "0.79")
         self.assertEqual(profile["CONTEXT_LENGTH"], "1048576")
         self.assertEqual(profile["QWEN38_EFFECTIVE_CONTEXT_LENGTH"], "1048576")
@@ -101,6 +105,15 @@ class Qwen38FlashNextRecipeTests(unittest.TestCase):
         self.assertIn('[[ "${ALLOW_AUTO_TRUNCATE}" == "0" ]]', script)
         self.assertIn("check_runtime_memory_headroom", script)
         self.assertIn("Qwen launch rolled back", script)
+        self.assertIn("replacing any stale head/worker containers", script)
+        self.assertIn("returned without a ready Qwen model endpoint", script)
+        self.assertIn("resolve_cluster_interfaces", script)
+        self.assertIn("local_netdev_for_ip", script)
+        self.assertIn("worker_hca_for_netdev", script)
+        self.assertIn(
+            "unset HEAD_CX7_IF WORKER_CX7_IF HEAD_CX7_IB WORKER_CX7_IB",
+            script,
+        )
         self.assertIn("run_proxy_cli serve", script)
         self.assertIn("run_proxy_cli smoke", script)
         self.assertIn("Tailscale Funnel targets unauthenticated raw port", script)
