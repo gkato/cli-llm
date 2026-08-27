@@ -20,8 +20,9 @@ PROJECT_ENV_FILE_DEFAULT="${PROJECT_ROOT}/.env.local"
 MODEL_ID_DEFAULT="LibertAIDAI/GLM-5.3-Flash-NVFP4"
 MODEL_REVISION_DEFAULT="11d73216cd636238e82e1d77fe1042ffab36e7fa"
 VLLM_BASE_IMAGE_DEFAULT="vllm/vllm-openai:glm53-flash-arm64-cu130@sha256:905c02933be6021301db2dc284e24e3727467aa3a0f63b41d609885778a07bce"
-VLLM_IMAGE_DEFAULT="ml-compute/glm53-flash-ray:ray-2.55.1"
+VLLM_IMAGE_DEFAULT="ml-compute/glm53-flash-ray:ray-2.55.1-r2"
 RAY_VERSION_DEFAULT="2.55.1"
+RUNTIME_LAYER_REVISION_DEFAULT="2"
 VLLM_CLUSTER_REFERENCE="51c1ee9b7c8acbba4899a8ebffd390685d171946"
 RUNTIME_DOCKERFILE="${PROJECT_ROOT}/docker/glm53-flash-ray/Dockerfile"
 
@@ -69,7 +70,7 @@ Actions:
 
 Reviewed bring-up profile:
   - two GB10 nodes, Ray + vLLM tensor parallelism TP=2
-  - publisher arm64 image plus pinned Ray 2.55.1/cgraph runtime layer
+  - publisher arm64 image plus pinned Ray 2.55.1 RayExecutorV2 layer
   - 32K context, one sequence, 0.84 UMA fraction per node
   - Marlin MoE fallback + eager execution for SM121 compatibility
   - model-native glm47 tools, glm45 reasoning, in-checkpoint MTP=5
@@ -132,6 +133,8 @@ SERVED_MODEL_NAME|GLM-5.3-Flash-NVFP4
 VLLM_BASE_IMAGE|${VLLM_BASE_IMAGE_DEFAULT}
 VLLM_IMAGE|${VLLM_IMAGE_DEFAULT}
 RAY_VERSION|${RAY_VERSION_DEFAULT}
+RUNTIME_LAYER_REVISION|${RUNTIME_LAYER_REVISION_DEFAULT}
+VLLM_USE_RAY_V2_EXECUTOR_BACKEND|1
 TENSOR_PARALLEL_SIZE|2
 MAX_MODEL_LEN|32768
 MAX_NUM_SEQS|1
@@ -179,6 +182,8 @@ SERVED_MODEL_NAME
 VLLM_BASE_IMAGE
 VLLM_IMAGE
 RAY_VERSION
+RUNTIME_LAYER_REVISION
+VLLM_USE_RAY_V2_EXECUTOR_BACKEND
 TENSOR_PARALLEL_SIZE
 MAX_MODEL_LEN
 MAX_NUM_SEQS
@@ -230,6 +235,10 @@ validate_profile() {
     || warn "VLLM_IMAGE differs from the reviewed Ray-enabled local image"
   [[ "${RAY_VERSION}" == "${RAY_VERSION_DEFAULT}" ]] \
     || die "RAY_VERSION must remain ${RAY_VERSION_DEFAULT} for the reviewed vLLM executor"
+  [[ "${RUNTIME_LAYER_REVISION}" == "${RUNTIME_LAYER_REVISION_DEFAULT}" ]] \
+    || die "RUNTIME_LAYER_REVISION must remain ${RUNTIME_LAYER_REVISION_DEFAULT}"
+  [[ "${VLLM_USE_RAY_V2_EXECUTOR_BACKEND}" == "1" ]] \
+    || die "VLLM_USE_RAY_V2_EXECUTOR_BACKEND must remain enabled; the runtime excludes legacy cgraph"
 }
 
 configure() {
@@ -310,6 +319,7 @@ worker_docker_build() {
   for arg in build \
     --build-arg "BASE_IMAGE=${VLLM_BASE_IMAGE}" \
     --build-arg "RAY_VERSION=${RAY_VERSION}" \
+    --build-arg "RUNTIME_LAYER_REVISION=${RUNTIME_LAYER_REVISION}" \
     --tag "${VLLM_IMAGE}" -; do
     quoted+=("$(printf '%q' "${arg}")")
   done
@@ -435,23 +445,26 @@ ensure_image() {
     worker_docker pull "${VLLM_BASE_IMAGE}"
   fi
 
-  local head_ray worker_ray
+  local head_ray head_revision worker_ray worker_revision
   head_ray="$(docker image inspect --format '{{ index .Config.Labels "org.ml-compute.ray.version" }}' "${VLLM_IMAGE}" 2>/dev/null || true)"
-  if [[ "${head_ray}" == "${RAY_VERSION}" ]]; then
-    log "Ray-enabled GLM image present on head (Ray ${head_ray})"
+  head_revision="$(docker image inspect --format '{{ index .Config.Labels "org.ml-compute.runtime.revision" }}' "${VLLM_IMAGE}" 2>/dev/null || true)"
+  if [[ "${head_ray}" == "${RAY_VERSION}" && "${head_revision}" == "${RUNTIME_LAYER_REVISION}" ]]; then
+    log "Ray-enabled GLM image present on head (Ray ${head_ray}, layer r${head_revision})"
   else
-    log "Building Ray-enabled GLM image on head (Ray ${RAY_VERSION})"
+    log "Building Ray-enabled GLM image on head (Ray ${RAY_VERSION}, layer r${RUNTIME_LAYER_REVISION})"
     docker build \
       --build-arg "BASE_IMAGE=${VLLM_BASE_IMAGE}" \
       --build-arg "RAY_VERSION=${RAY_VERSION}" \
+      --build-arg "RUNTIME_LAYER_REVISION=${RUNTIME_LAYER_REVISION}" \
       --tag "${VLLM_IMAGE}" - <"${RUNTIME_DOCKERFILE}"
   fi
 
   worker_ray="$(worker_docker image inspect --format '{{ index .Config.Labels "org.ml-compute.ray.version" }}' "${VLLM_IMAGE}" 2>/dev/null || true)"
-  if [[ "${worker_ray}" == "${RAY_VERSION}" ]]; then
-    log "Ray-enabled GLM image present on worker (Ray ${worker_ray})"
+  worker_revision="$(worker_docker image inspect --format '{{ index .Config.Labels "org.ml-compute.runtime.revision" }}' "${VLLM_IMAGE}" 2>/dev/null || true)"
+  if [[ "${worker_ray}" == "${RAY_VERSION}" && "${worker_revision}" == "${RUNTIME_LAYER_REVISION}" ]]; then
+    log "Ray-enabled GLM image present on worker (Ray ${worker_ray}, layer r${worker_revision})"
   else
-    log "Building Ray-enabled GLM image on worker (Ray ${RAY_VERSION})"
+    log "Building Ray-enabled GLM image on worker (Ray ${RAY_VERSION}, layer r${RUNTIME_LAYER_REVISION})"
     worker_docker_build
   fi
 }
@@ -459,9 +472,13 @@ ensure_image() {
 gpu_check() {
   ensure_image
   local probe
-  probe="python3 -c 'import ray, torch, vllm; assert torch.cuda.is_available(); print(torch.cuda.get_device_name(0), vllm.__version__, ray.__version__)'"
-  docker run --rm --gpus all --entrypoint /bin/bash "${VLLM_IMAGE}" -lc "${probe}"
-  worker_docker run --rm --gpus all --entrypoint /bin/bash "${VLLM_IMAGE}" -lc "${probe}"
+  probe="python3 -c 'import importlib.metadata as m, os, ray, torch, vllm; names={d.metadata.get(\"Name\", \"\").lower().replace(\"_\", \"-\") for d in m.distributions()}; assert torch.cuda.is_available(); assert \"cupy-cuda12x\" not in names; assert os.environ[\"VLLM_USE_RAY_V2_EXECUTOR_BACKEND\"] == \"1\"; print(torch.cuda.get_device_name(0), vllm.__version__, ray.__version__, \"ray_v2=1\")'"
+  docker run --rm --gpus all --entrypoint /bin/bash \
+    -e VLLM_USE_RAY_V2_EXECUTOR_BACKEND="${VLLM_USE_RAY_V2_EXECUTOR_BACKEND}" \
+    "${VLLM_IMAGE}" -lc "${probe}"
+  worker_docker run --rm --gpus all --entrypoint /bin/bash \
+    -e VLLM_USE_RAY_V2_EXECUTOR_BACKEND="${VLLM_USE_RAY_V2_EXECUTOR_BACKEND}" \
+    "${VLLM_IMAGE}" -lc "${probe}"
 }
 
 download_on_head() {
@@ -591,6 +608,7 @@ start_ray_cluster() {
     -e MASTER_ADDR="${HEAD_CX7_IP}" \
     -e HF_HUB_OFFLINE=1 -e TRANSFORMERS_OFFLINE=1 \
     -e VLLM_ENGINE_READY_TIMEOUT_S="${VLLM_ENGINE_READY_TIMEOUT_S}" \
+    -e VLLM_USE_RAY_V2_EXECUTOR_BACKEND="${VLLM_USE_RAY_V2_EXECUTOR_BACKEND}" \
     "${VLLM_IMAGE}" -lc \
     "exec ray start --block --head --node-ip-address=${HEAD_CX7_IP} --port=${RAY_HEAD_PORT} --include-dashboard=false" \
     >/dev/null
@@ -622,6 +640,7 @@ start_ray_cluster() {
     -e MASTER_ADDR="${HEAD_CX7_IP}" \
     -e HF_HUB_OFFLINE=1 -e TRANSFORMERS_OFFLINE=1 \
     -e VLLM_ENGINE_READY_TIMEOUT_S="${VLLM_ENGINE_READY_TIMEOUT_S}" \
+    -e VLLM_USE_RAY_V2_EXECUTOR_BACKEND="${VLLM_USE_RAY_V2_EXECUTOR_BACKEND}" \
     "${VLLM_IMAGE}" -lc \
     "exec ray start --block --address=${HEAD_CX7_IP}:${RAY_HEAD_PORT} --node-ip-address=${WORKER_CX7_IP}" \
     >/dev/null
@@ -695,8 +714,10 @@ wait_ready() {
 
 show_failure_diagnostics() {
   local scan
-  scan='root=/tmp/ray/session_latest/logs; [ -d "$root" ] || exit 0; grep -Eil "Traceback|ERROR|Exception|OutOfMemory|CUDA|NCCL|failed|killed|SIGABRT" "$root"/*.err "$root"/*.out 2>/dev/null | tail -n 12 | while IFS= read -r file; do printf "\\n===== %s =====\\n" "$file"; tail -n 100 "$file"; done'
+  scan='root=/tmp/ray/session_latest/logs; [ -d "$root" ] || exit 0; find "$root" -maxdepth 1 -type f \( -name "worker-*.err" -o -name "worker-*.out" -o -name "python-core-worker-*.log" \) -size +0c -printf "%T@ %p\\n" | sort -n | tail -n 16 | cut -d" " -f2- | while IFS= read -r file; do printf "\\n===== %s =====\\n" "$file"; tail -n 160 "$file"; done'
 
+  printf '\nHead vLLM driver log:\n'
+  tail -n 400 "${VLLM_LOG}" 2>&1 || true
   printf '\nGLM runtime versions (head):\n'
   docker exec "${GLM53_HEAD_CONTAINER}" python3 -c \
     'import ray, vllm; print("vllm", vllm.__version__, "ray", ray.__version__)' \
@@ -815,10 +836,12 @@ case "${action}" in
   all) configure; check_host; ensure_image; download_model; gpu_check; start_service ;;
   path)
     load_profile
-    printf 'profile=%s\nruntime=%s\nhf_home=%s\nlog=%s\nmodel_revision=%s\nbase_image=%s\nimage=%s\nray_version=%s\nruntime_dockerfile=%s\nvllm_cluster_reference=%s\n' \
+    printf 'profile=%s\nruntime=%s\nhf_home=%s\nlog=%s\nmodel_revision=%s\nbase_image=%s\nimage=%s\nray_version=%s\nruntime_layer_revision=%s\nray_v2_executor=%s\nruntime_dockerfile=%s\nvllm_cluster_reference=%s\n' \
       "${PROFILE_FILE}" "${RUNTIME_DIR}" "${HF_HOME}" "${VLLM_LOG}" \
       "${MODEL_REVISION}" "${VLLM_BASE_IMAGE}" "${VLLM_IMAGE}" \
-      "${RAY_VERSION}" "${RUNTIME_DOCKERFILE}" "${VLLM_CLUSTER_REFERENCE}"
+      "${RAY_VERSION}" "${RUNTIME_LAYER_REVISION}" \
+      "${VLLM_USE_RAY_V2_EXECUTOR_BACKEND}" "${RUNTIME_DOCKERFILE}" \
+      "${VLLM_CLUSTER_REFERENCE}"
     ;;
   help|-h|--help) usage ;;
   *) die "Unknown action: ${action}. Run glm53-flash help" ;;

@@ -44,8 +44,10 @@ class GLM53FlashRecipeTests(unittest.TestCase):
         self.assertEqual(profile["RAY_VERSION"], "2.55.1")
         self.assertEqual(
             profile["VLLM_IMAGE"],
-            "ml-compute/glm53-flash-ray:ray-2.55.1",
+            "ml-compute/glm53-flash-ray:ray-2.55.1-r2",
         )
+        self.assertEqual(profile["RUNTIME_LAYER_REVISION"], "2")
+        self.assertEqual(profile["VLLM_USE_RAY_V2_EXECUTOR_BACKEND"], "1")
         self.assertIn("@sha256:", profile["VLLM_BASE_IMAGE"])
         self.assertEqual(profile["GLM53_MIN_AVAILABLE_GIB"], "112")
         self.assertEqual(profile["GLM53_MIN_DISK_GIB"], "240")
@@ -71,15 +73,19 @@ class GLM53FlashRecipeTests(unittest.TestCase):
         self.assertEqual(model["ray_version"], "2.55.1")
         self.assertEqual(
             model["runtime_image"],
-            "ml-compute/glm53-flash-ray:ray-2.55.1",
+            "ml-compute/glm53-flash-ray:ray-2.55.1-r2",
         )
+        self.assertEqual(model["runtime_layer_revision"], 2)
+        self.assertTrue(model["ray_executor_v2"])
         self.assertIn("@sha256:", model["runtime_base_image"])
 
     def test_runtime_layer_adds_the_pinned_ray_executor(self):
         dockerfile = DOCKERFILE.read_text(encoding="utf-8")
 
         self.assertIn("ARG RAY_VERSION=2.55.1", dockerfile)
-        self.assertIn('ray[cgraph,default]==${RAY_VERSION}', dockerfile)
+        self.assertIn('ray[default]==${RAY_VERSION}', dockerfile)
+        self.assertNotIn('ray[cgraph,default]', dockerfile)
+        self.assertIn('"cupy-cuda12x" not in names', dockerfile)
         self.assertIn("import ray; import vllm", dockerfile)
         self.assertIn("org.ml-compute.ray.version", dockerfile)
 

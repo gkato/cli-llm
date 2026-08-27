@@ -412,8 +412,11 @@ Spark. It preserves the model-native `glm47` tool parser, `glm45` reasoning
 parser, and five-token in-checkpoint MTP speculation.
 
 The publisher image does not bundle Ray. The `pull` action therefore builds
-`ml-compute/glm53-flash-ray:ray-2.55.1` from the pinned publisher image on both
-nodes. The checked-in layer installs `ray[cgraph,default]==2.55.1`. Ray 2.54+
+`ml-compute/glm53-flash-ray:ray-2.55.1-r2` from the pinned publisher image on
+both nodes. The checked-in layer installs `ray[default]==2.55.1` and explicitly
+uses RayExecutorV2. It does not install Ray's `cgraph` extra because that extra
+pulls `cupy-cuda12x`, conflicting with the publisher image's `cupy-cuda13x`.
+The build and GPU checks reject that mixed-CuPy state. Ray 2.54+
 contains the [stale-actor crash fix](https://github.com/ray-project/ray/pull/59425):
 older Ray aborts in C++ during vLLM's late cleanup and hides the earlier,
 actionable EngineCore error. The remaining cleanup issue is documented in
