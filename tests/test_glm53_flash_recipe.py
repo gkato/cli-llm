@@ -1,3 +1,4 @@
+import os
 import subprocess
 import unittest
 from pathlib import Path
@@ -132,6 +133,22 @@ class GLM53FlashRecipeTests(unittest.TestCase):
             )
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertTrue(path.stat().st_mode & 0o100)
+
+    def test_relative_hf_home_is_rooted_before_upstream_directory_change(self):
+        env = os.environ.copy()
+        env["HF_HOME"] = "./data/hf_cache"
+
+        result = subprocess.run(
+            ["bash", str(SCRIPT), "path"],
+            cwd=ROOT,
+            env=env,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(f"hf_home={ROOT}/data/hf_cache\n", result.stdout)
 
     @patch("ml.cli.subprocess.run")
     def test_cli_dispatches_to_glm_recipe(self, run):

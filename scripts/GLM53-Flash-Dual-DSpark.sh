@@ -173,6 +173,14 @@ EXTRA_ARGS|
 GLM53_MIN_AVAILABLE_GIB|112
 GLM53_MIN_DISK_GIB|240
 EOF
+
+  # MiaAI's launcher runs from RECIPE_DIR. Resolve a user-supplied relative
+  # HF_HOME against the ml-compute root before that directory change so the
+  # cache verified here is the same cache mounted by the upstream launcher.
+  if [[ "${HF_HOME}" != /* ]]; then
+    HF_HOME="${PROJECT_ROOT}/${HF_HOME#./}"
+    export HF_HOME
+  fi
 }
 
 resolved_keys() {
