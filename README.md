@@ -368,7 +368,9 @@ The lifecycle adapter is
 
 The committed profile uses MiaAI-Lab's full 1,048,576-token YaRN path with
 NVFP4 KV cache, 1K-token QSA prefill chunks, PLE auto-offload, Mamba
-full-memory ratio 0.3, and NEXTN `3/1/4`. The request ceiling remains 16.
+full-memory ratio 0.3, and NEXTN `3/1/4`. The request ceiling remains 16;
+the Mamba cache is pinned to 80 state slots (five per NEXTN request) so the
+engine can honor that ceiling instead of silently reducing concurrency.
 `MEM_FRACTION_STATIC=0.79` plus a post-start `MemAvailable` guard preserves at
 least 20 GiB on the worker. Automatic prompt truncation and short-KV-pool
 overrides remain disabled, so the launch fails closed unless one full 1M
@@ -376,6 +378,9 @@ request fits. The wrapper also rejects public raw binds, disabled PLE offload,
 or a disabled kernel patch. As with the GLM lifecycle, the configured RoCE IPs
 are authoritative: interface and RDMA HCA names are detected on both nodes
 before MiaAI's `.env` is materialized, avoiding stale PCI-slot name assumptions.
+The upstream process also has `API_KEY` removed explicitly: raw SGLang remains
+unkeyed on loopback, while client authentication belongs exclusively to the
+safety proxy on port 8000.
 
 Do not add `--load-format dummy`: the upstream investigation found that the
 temporary FP16 copy of the PLE table can exhaust GB10 unified memory and

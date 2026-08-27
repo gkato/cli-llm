@@ -911,6 +911,7 @@ models:
     kv_cache_dtype: nvfp4
     worker_memory_reserve_gib: 20
     mamba_full_memory_ratio: 0.3
+    max_mamba_cache_size: 80
     speculative_method: nextn
     speculative_steps: 3
     speculative_topk: 1
