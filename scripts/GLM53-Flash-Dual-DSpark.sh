@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 # GLM-5.3 Flash NVFP4 on two linked DGX Sparks (GB10 / SM121).
 #
-# The model currently requires its dedicated arm64 vLLM image, which does not
-# include Ray. This lifecycle builds a pinned Ray layer on that image, follows
-# vLLM/NVIDIA's two-node pattern, mirrors the checkpoint, and keeps the raw API
-# behind ml-compute's proxy.
+# Lifecycle adapter for MiaAI-Lab's validated vLLM/Ray TP=2 recipe:
+# https://github.com/MiaAI-Lab/GLM-5.3-Flash-NVFP4-Dual-DGX-Spark
+# The upstream checkout, model revision, and publisher base image are pinned.
+# Generated images, compile caches, and the ~181 GiB checkpoint stay below the
+# ignored data tree; ml-compute keeps ownership of configuration and exposure.
 
 if [ -z "${BASH_VERSION:-}" ]; then
   exec bash "$0" "$@"
@@ -15,25 +16,25 @@ set -Eeuo pipefail
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PROFILE_FILE_DEFAULT="${PROJECT_ROOT}/config/dspark-glm53-flash-nvfp4.env"
 RUNTIME_DIR_DEFAULT="${PROJECT_ROOT}/data/dspark/glm53-flash"
+RECIPE_DIR_DEFAULT="${RUNTIME_DIR_DEFAULT}/miaai-dual-spark"
 PROJECT_ENV_FILE_DEFAULT="${PROJECT_ROOT}/.env.local"
 
+UPSTREAM_REPO_DEFAULT="https://github.com/MiaAI-Lab/GLM-5.3-Flash-NVFP4-Dual-DGX-Spark.git"
+UPSTREAM_REVISION_DEFAULT="aed98a13ca75140d2691cc5c651ea5817d9a3e44"
 MODEL_ID_DEFAULT="LibertAIDAI/GLM-5.3-Flash-NVFP4"
 MODEL_REVISION_DEFAULT="11d73216cd636238e82e1d77fe1042ffab36e7fa"
 VLLM_BASE_IMAGE_DEFAULT="vllm/vllm-openai:glm53-flash-arm64-cu130@sha256:905c02933be6021301db2dc284e24e3727467aa3a0f63b41d609885778a07bce"
-VLLM_IMAGE_DEFAULT="ml-compute/glm53-flash-ray:ray-2.55.1-r2"
-RAY_VERSION_DEFAULT="2.55.1"
-RUNTIME_LAYER_REVISION_DEFAULT="2"
-VLLM_CLUSTER_REFERENCE="51c1ee9b7c8acbba4899a8ebffd390685d171946"
-RUNTIME_DOCKERFILE="${PROJECT_ROOT}/docker/glm53-flash-ray/Dockerfile"
+KERNEL_IMAGE_DEFAULT="ml-compute/glm53-flash-sm121-kernel:v8-aed98a1"
+VLLM_IMAGE_DEFAULT="ml-compute/glm53-flash-sm121:mm-ray-v1-aed98a1"
+RAY_VERSION_DEFAULT="2.58.0"
 
 PROFILE_FILE="${GLM53_DSPARK_CONFIG_FILE:-${PROFILE_FILE_DEFAULT}}"
 RUNTIME_DIR="${GLM53_DSPARK_RUNTIME_DIR:-${RUNTIME_DIR_DEFAULT}}"
+RECIPE_DIR="${GLM53_DSPARK_RECIPE_DIR:-${RECIPE_DIR_DEFAULT}}"
 PROJECT_ENV_FILE="${GLM53_DSPARK_PROJECT_ENV_FILE:-${PROJECT_ENV_FILE_DEFAULT}}"
-LOG_DIR="${RUNTIME_DIR}/logs"
-VLLM_LOG="${LOG_DIR}/vllm.log"
+UPSTREAM_REPO="${GLM53_DSPARK_UPSTREAM_REPO:-${UPSTREAM_REPO_DEFAULT}}"
+UPSTREAM_REVISION="${GLM53_DSPARK_UPSTREAM_REVISION:-${UPSTREAM_REVISION_DEFAULT}}"
 RESOLVED_ENV="${RUNTIME_DIR}/.env.glm53"
-VLLM_PID_FILE="/tmp/ml-compute-glm53-vllm.pid"
-VLLM_EXIT_FILE="/tmp/ml-compute-glm53-vllm.exit"
 
 log() { printf '[glm53-flash] %s\n' "$*"; }
 warn() { printf '[glm53-flash] WARNING: %s\n' "$*" >&2; }
@@ -41,7 +42,7 @@ die() { printf '[glm53-flash] ERROR: %s\n' "$*" >&2; exit 1; }
 
 usage() {
   cat <<'EOF'
-GLM-5.3 Flash NVFP4 — dual-DGX-Spark vLLM/Ray lifecycle
+GLM-5.3 Flash NVFP4 — MiaAI dual-DGX-Spark vLLM/Ray lifecycle
 
 Run on the head/rank-0 Spark:
 
@@ -52,35 +53,37 @@ Run on the head/rank-0 Spark:
   python3 -m ml.cli glm53-flash smoke
 
 Actions:
+  bootstrap    Clone and detach the reviewed MiaAI-Lab upstream revision
   configure    Validate and materialize the resolved ml-compute profile
-  check        Validate both GB10 nodes, RoCE/SSH, memory, disk, and API key
-  setup        Run configure and check
-  pull         Pull the pinned base and build the Ray-enabled image on both nodes
+  check        Validate the pin, both GB10 nodes, memory, disk, and API key
+  setup        Run bootstrap, configure, and check
+  pull         Build MiaAI's pinned SM121 kernel/serving image and ship it
   download     Download the pinned ~181 GiB snapshot and rsync it to the worker
-  gpu-check    Initialize CUDA and import vLLM in the image on both nodes
-  start        Start Ray, launch vLLM TP=2, then expose the safety proxy
-  status       Show Ray containers, cluster resources, raw API, and proxy state
-  diagnose     Print vLLM plus matching head/worker Ray error logs
+  gpu-check    Verify CUDA, Ray 2.58, and the SM121/NoPE patch on both nodes
+  start        Run MiaAI's worker-first TP=2 launch, then the safety proxy
+  status       Show both containers, Ray status, raw API, and proxy state
+  diagnose     Print the head log and relevant head/worker Ray logs
   memory       Show shared-memory and GPU use on both nodes
   smoke        Verify proxy safety and perform one GLM completion
-  logs         Follow the head vLLM server log
-  logs-worker  Follow the worker Ray container log
-  stop         Stop the proxy and both Ray containers; preserve caches
-  all          Run setup, pull, download, gpu-check, and start
-  path         Print profile, runtime, cache, log, and pinned revisions
+  logs         Follow MiaAI's head container log
+  logs-worker  Follow MiaAI's worker container log
+  stop         Stop the proxy and both containers; preserve caches
+  update       Fetch and re-checkout the revision pinned by this script
+  all          Run setup, download, pull, gpu-check, and start
+  path         Print checkout, profile, cache, image, and revision paths
   help         Show this help
 
-Reviewed bring-up profile:
-  - two GB10 nodes, Ray + vLLM tensor parallelism TP=2
-  - publisher arm64 image plus pinned Ray 2.55.1 RayExecutorV2 layer
-  - 32K context, one sequence, 0.84 UMA fraction per node
-  - Marlin MoE fallback + eager execution for SM121 compatibility
-  - model-native glm47 tools, glm45 reasoning, in-checkpoint MTP=5
+Reviewed MiaAI profile:
+  - patched SM121 image: SM90 NoPE sparse MLA + FlashInfer FA2
+  - Ray 2.58.0 default executor with a 4 GiB object store per UMA node
+  - 256K context, 8 sequences, FP8 KV, block size 2304
+  - Marlin MoE + eager execution and MM profiling disabled during boot
+  - glm47 tools, glm45 reasoning, in-checkpoint MTP=4
   - raw unauthenticated API on 127.0.0.1:8888 only
   - authenticated allow-list proxy on 0.0.0.0:8000
 
-This is intentionally marked experimental: the checkpoint fits in two Sparks,
-but the publisher does not list GB10/SM121 among verified runtime targets.
+The previous RayExecutorV2 layer is intentionally not used: it reused actor
+handles across Ray jobs during EngineCore initialization on this vLLM build.
 EOF
 }
 
@@ -123,38 +126,50 @@ WORKER_USER|
 WORKER_HOST|spark2
 WORKER_SSH|
 RAY_HEAD_PORT|6379
-GLM53_HEAD_CONTAINER|glm53-flash-ray-head
-GLM53_WORKER_CONTAINER|glm53-flash-ray-worker
+GLM53_HEAD_CONTAINER|glm53-flash-head
+GLM53_WORKER_CONTAINER|glm53-flash-worker
 HOST_BIND|127.0.0.1
 PORT|8888
 DSPARK_PROXY_HOST|0.0.0.0
 DSPARK_PROXY_PORT|8000
 MODEL_ID|${MODEL_ID_DEFAULT}
 MODEL_REVISION|${MODEL_REVISION_DEFAULT}
-SERVED_MODEL_NAME|GLM-5.3-Flash-NVFP4
+SERVED_MODEL_NAME|${MODEL_ID_DEFAULT}
 VLLM_BASE_IMAGE|${VLLM_BASE_IMAGE_DEFAULT}
+KERNEL_IMAGE|${KERNEL_IMAGE_DEFAULT}
 VLLM_IMAGE|${VLLM_IMAGE_DEFAULT}
 RAY_VERSION|${RAY_VERSION_DEFAULT}
-RUNTIME_LAYER_REVISION|${RUNTIME_LAYER_REVISION_DEFAULT}
-VLLM_USE_RAY_V2_EXECUTOR_BACKEND|1
+RAY_OBJECT_STORE_MEMORY|4294967296
 TENSOR_PARALLEL_SIZE|2
-MAX_MODEL_LEN|32768
-MAX_NUM_SEQS|1
-MAX_NUM_BATCHED_TOKENS|4096
+MAX_MODEL_LEN|262144
+MAX_NUM_SEQS|8
 GPU_MEMORY_UTILIZATION|0.84
-KV_CACHE_DTYPE|auto
+BLOCK_SIZE|2304
+KV_CACHE_DTYPE|fp8_e4m3
+KV_CACHE_MEMORY|
 MOE_BACKEND|marlin
 ENFORCE_EAGER|1
 TOOL_CALL_PARSER|glm47
 REASONING_PARSER|glm45
-MTP_SPECULATIVE_TOKENS|5
+MTP_SPECULATIVE_TOKENS|4
+LIMIT_MM|{"image":4,"video":1}
+SKIP_MM_PROFILING|1
+TORCH_CUDA_ARCH_LIST|12.1a
+FLASHINFER_CUDA_ARCH_LIST|12.1a
 HF_HOME|${RUNTIME_DIR}/cache/huggingface
 WORKER_HF_HOME|
 DOWNLOAD_MODE|rsync
 VLLM_ENGINE_READY_TIMEOUT_S|3600
-CPUSET|5-9,15-19
+CLUSTER_WAIT_ITERS|120
+CACHE_VOLUME|glm53-flash-cache-sm121
+USE_HOST_NCCL|1
+NCCL_HOST_DIR|
+WORKER_NCCL_HOST_DIR|
+NCCL_SO_NAME|libnccl.so.2.30.7
 NCCL_DEBUG|WARN
+NCCL_IB_GID_INDEX|3
 NCCL_CROSS_NIC|0
+EXTRA_ARGS|
 GLM53_MIN_AVAILABLE_GIB|112
 GLM53_MIN_DISK_GIB|240
 EOF
@@ -182,28 +197,40 @@ MODEL_ID
 MODEL_REVISION
 SERVED_MODEL_NAME
 VLLM_BASE_IMAGE
+KERNEL_IMAGE
 VLLM_IMAGE
 RAY_VERSION
-RUNTIME_LAYER_REVISION
-VLLM_USE_RAY_V2_EXECUTOR_BACKEND
+RAY_OBJECT_STORE_MEMORY
 TENSOR_PARALLEL_SIZE
 MAX_MODEL_LEN
 MAX_NUM_SEQS
-MAX_NUM_BATCHED_TOKENS
 GPU_MEMORY_UTILIZATION
+BLOCK_SIZE
 KV_CACHE_DTYPE
+KV_CACHE_MEMORY
 MOE_BACKEND
 ENFORCE_EAGER
 TOOL_CALL_PARSER
 REASONING_PARSER
 MTP_SPECULATIVE_TOKENS
+LIMIT_MM
+SKIP_MM_PROFILING
+TORCH_CUDA_ARCH_LIST
+FLASHINFER_CUDA_ARCH_LIST
 HF_HOME
 WORKER_HF_HOME
 DOWNLOAD_MODE
 VLLM_ENGINE_READY_TIMEOUT_S
-CPUSET
+CLUSTER_WAIT_ITERS
+CACHE_VOLUME
+USE_HOST_NCCL
+NCCL_HOST_DIR
+WORKER_NCCL_HOST_DIR
+NCCL_SO_NAME
 NCCL_DEBUG
+NCCL_IB_GID_INDEX
 NCCL_CROSS_NIC
+EXTRA_ARGS
 GLM53_MIN_AVAILABLE_GIB
 GLM53_MIN_DISK_GIB
 EOF
@@ -214,42 +241,102 @@ validate_profile() {
   [[ "${HOST_BIND}" == "127.0.0.1" ]] \
     || die "HOST_BIND must be 127.0.0.1; expose only the authenticated safety proxy"
   [[ "${TENSOR_PARALLEL_SIZE}" == "2" ]] \
-    || die "This lifecycle is specifically reviewed for two Sparks and TP=2"
-  [[ "${MAX_NUM_SEQS}" == "1" ]] \
-    || die "MAX_NUM_SEQS must remain 1 for the two-Spark bring-up profile"
-  (( MAX_MODEL_LEN <= 32768 )) \
-    || die "MAX_MODEL_LEN above 32768 is not validated with this 181 GiB checkpoint on two Sparks"
+    || die "MiaAI's reviewed lifecycle is specifically two Sparks and TP=2"
+  (( MAX_MODEL_LEN <= 262144 )) \
+    || die "MAX_MODEL_LEN above MiaAI's reviewed 262144-token profile is not enabled"
+  (( MAX_NUM_SEQS <= 8 )) \
+    || die "MAX_NUM_SEQS above MiaAI's reviewed value 8 is not enabled"
   awk -v value="${GPU_MEMORY_UTILIZATION}" 'BEGIN {exit !(value <= 0.84)}' \
-    || die "GPU_MEMORY_UTILIZATION above 0.84 is not safe for the reviewed GB10 profile"
+    || die "GPU_MEMORY_UTILIZATION above 0.84 can exhaust GB10 UMA during MM warmup"
+  [[ "${BLOCK_SIZE}" == "2304" ]] \
+    || die "BLOCK_SIZE must remain 2304 for MiaAI's DeepGEMM paged-MQA profile"
+  [[ "${KV_CACHE_DTYPE}" == "fp8_e4m3" ]] \
+    || die "KV_CACHE_DTYPE must remain fp8_e4m3 for the reviewed memory profile"
   [[ "${MOE_BACKEND}" == "marlin" ]] \
-    || die "MOE_BACKEND must remain marlin until native GLM FP4 MoE kernels are verified on SM121"
+    || die "MOE_BACKEND must remain marlin on GB10/SM121"
   [[ "${ENFORCE_EAGER}" == "1" ]] \
-    || die "ENFORCE_EAGER must remain enabled for the conservative SM121 profile"
-  (( MTP_SPECULATIVE_TOKENS >= 0 && MTP_SPECULATIVE_TOKENS <= 5 )) \
-    || die "MTP_SPECULATIVE_TOKENS must be between 0 and the published value 5"
-  [[ "${MODEL_ID}" == "${MODEL_ID_DEFAULT}" ]] \
-    || warn "MODEL_ID differs from the reviewed GLM checkpoint"
-  [[ "${MODEL_REVISION}" == "${MODEL_REVISION_DEFAULT}" ]] \
-    || warn "MODEL_REVISION differs from the reviewed checkpoint pin"
-  [[ "${VLLM_BASE_IMAGE}" == "${VLLM_BASE_IMAGE_DEFAULT}" ]] \
-    || warn "VLLM_BASE_IMAGE differs from the reviewed dedicated arm64 manifest"
-  [[ "${VLLM_IMAGE}" == "${VLLM_IMAGE_DEFAULT}" ]] \
-    || warn "VLLM_IMAGE differs from the reviewed Ray-enabled local image"
+    || die "ENFORCE_EAGER must remain enabled on GB10 UMA"
+  [[ "${SKIP_MM_PROFILING}" == "1" ]] \
+    || die "SKIP_MM_PROFILING must remain enabled; the max-size MM dummy forward OOMs UMA"
+  (( MTP_SPECULATIVE_TOKENS >= 0 && MTP_SPECULATIVE_TOKENS <= 4 )) \
+    || die "MTP_SPECULATIVE_TOKENS must be between 0 and MiaAI's reviewed value 4"
   [[ "${RAY_VERSION}" == "${RAY_VERSION_DEFAULT}" ]] \
-    || die "RAY_VERSION must remain ${RAY_VERSION_DEFAULT} for the reviewed vLLM executor"
-  [[ "${RUNTIME_LAYER_REVISION}" == "${RUNTIME_LAYER_REVISION_DEFAULT}" ]] \
-    || die "RUNTIME_LAYER_REVISION must remain ${RUNTIME_LAYER_REVISION_DEFAULT}"
-  [[ "${VLLM_USE_RAY_V2_EXECUTOR_BACKEND}" == "1" ]] \
-    || die "VLLM_USE_RAY_V2_EXECUTOR_BACKEND must remain enabled; the runtime excludes legacy cgraph"
+    || die "RAY_VERSION must remain ${RAY_VERSION_DEFAULT} for the pinned MiaAI recipe"
+  (( RAY_OBJECT_STORE_MEMORY <= 4294967296 )) \
+    || die "Ray object store above 4 GiB steals memory from the GB10 GPU budget"
+  [[ "${MODEL_ID}" == "${MODEL_ID_DEFAULT}" ]] \
+    || die "MODEL_ID must remain ${MODEL_ID_DEFAULT}"
+  [[ "${MODEL_REVISION}" == "${MODEL_REVISION_DEFAULT}" ]] \
+    || die "MODEL_REVISION must remain the reviewed checkpoint pin"
+  [[ "${SERVED_MODEL_NAME}" == "${MODEL_ID_DEFAULT}" ]] \
+    || die "SERVED_MODEL_NAME must match MiaAI's public model name ${MODEL_ID_DEFAULT}"
+  [[ "${VLLM_BASE_IMAGE}" == "${VLLM_BASE_IMAGE_DEFAULT}" ]] \
+    || die "VLLM_BASE_IMAGE must remain the reviewed publisher manifest"
+  [[ "${KERNEL_IMAGE}" == "${KERNEL_IMAGE_DEFAULT}" ]] \
+    || warn "KERNEL_IMAGE differs from the revision-keyed local tag"
+  [[ "${VLLM_IMAGE}" == "${VLLM_IMAGE_DEFAULT}" ]] \
+    || warn "VLLM_IMAGE differs from the revision-keyed local tag"
+  [[ "${GLM53_HEAD_CONTAINER}" == "glm53-flash-head" \
+    && "${GLM53_WORKER_CONTAINER}" == "glm53-flash-worker" ]] \
+    || die "Container names must match the pinned upstream lifecycle"
+  [[ "${USE_HOST_NCCL}" == "0" || "${USE_HOST_NCCL}" == "1" ]] \
+    || die "USE_HOST_NCCL must be 0 or 1"
+  [[ " ${EXTRA_ARGS} " != *" --host "* && " ${EXTRA_ARGS} " != *" --host="* ]] \
+    || die "EXTRA_ARGS may not override the private raw host"
+  [[ " ${EXTRA_ARGS} " != *" --port "* && " ${EXTRA_ARGS} " != *" --port="* ]] \
+    || die "EXTRA_ARGS may not override the private raw port"
+  [[ "${EXTRA_ARGS}" != *"VLLM_USE_RAY_V2_EXECUTOR_BACKEND"* ]] \
+    || die "RayExecutorV2 is not used by the validated MiaAI strategy"
+}
+
+recipe_head() {
+  git -C "${RECIPE_DIR}" rev-parse HEAD 2>/dev/null || true
+}
+
+check_recipe_pin() {
+  [[ -d "${RECIPE_DIR}/.git" ]] \
+    || die "Recipe is not bootstrapped. Run: python3 -m ml.cli glm53-flash bootstrap"
+  local head
+  head="$(recipe_head)"
+  [[ "${head}" == "${UPSTREAM_REVISION}" ]] \
+    || die "Upstream checkout is ${head:-unknown}, expected ${UPSTREAM_REVISION}; run glm53-flash update"
+}
+
+sync_recipe_pin() {
+  [[ -d "${RECIPE_DIR}/.git" ]] || die "Not a git checkout: ${RECIPE_DIR}"
+  if ! git -C "${RECIPE_DIR}" diff --quiet \
+      || ! git -C "${RECIPE_DIR}" diff --cached --quiet; then
+    die "Upstream checkout has tracked modifications; preserve or revert them before update"
+  fi
+  if ! git -C "${RECIPE_DIR}" cat-file -e "${UPSTREAM_REVISION}^{commit}" 2>/dev/null; then
+    git -C "${RECIPE_DIR}" fetch --no-tags origin "${UPSTREAM_REVISION}"
+  fi
+  git -C "${RECIPE_DIR}" checkout --detach "${UPSTREAM_REVISION}"
+  log "Pinned MiaAI upstream revision: ${UPSTREAM_REVISION}"
+}
+
+bootstrap() {
+  need_cmd git
+  if [[ -d "${RECIPE_DIR}/.git" ]]; then
+    sync_recipe_pin
+    return
+  fi
+  [[ ! -e "${RECIPE_DIR}" ]] \
+    || die "Recipe path exists but is not a git checkout: ${RECIPE_DIR}"
+  mkdir -p "$(dirname "${RECIPE_DIR}")"
+  git clone --no-tags "${UPSTREAM_REPO}" "${RECIPE_DIR}"
+  sync_recipe_pin
 }
 
 configure() {
+  check_recipe_pin
   validate_profile
-  mkdir -p "${RUNTIME_DIR}" "${LOG_DIR}" "${HF_HOME}"
+  mkdir -p "${RUNTIME_DIR}" "${RUNTIME_DIR}/logs" "${HF_HOME}"
   local env_tmp key
   env_tmp="$(mktemp "${RUNTIME_DIR}/.env.glm53.XXXXXX")"
   {
     printf '# Generated by ml-compute; edit %s instead.\n' "${PROFILE_FILE}"
+    printf 'UPSTREAM_REVISION=%s\n' "${UPSTREAM_REVISION}"
     while IFS= read -r key; do
       [[ -n "${key}" ]] || continue
       printf '%s=%s\n' "${key}" "${!key}"
@@ -304,7 +391,7 @@ worker_ssh_target() {
 wrun() {
   local target
   target="$(worker_ssh_target)"
-  ssh -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new -o BatchMode=yes \
+  ssh -o ConnectTimeout=15 -o StrictHostKeyChecking=accept-new -o BatchMode=yes \
     "${target}" "$1"
 }
 
@@ -316,18 +403,6 @@ worker_docker() {
   wrun "docker ${quoted[*]}"
 }
 
-worker_docker_build() {
-  local quoted=() arg
-  for arg in build \
-    --build-arg "BASE_IMAGE=${VLLM_BASE_IMAGE}" \
-    --build-arg "RAY_VERSION=${RAY_VERSION}" \
-    --build-arg "RUNTIME_LAYER_REVISION=${RUNTIME_LAYER_REVISION}" \
-    --tag "${VLLM_IMAGE}" -; do
-    quoted+=("$(printf '%q' "${arg}")")
-  done
-  wrun "docker ${quoted[*]}" <"${RUNTIME_DOCKERFILE}"
-}
-
 remote_home() {
   wrun 'printf %s "$HOME"'
 }
@@ -337,6 +412,16 @@ worker_hf_home() {
     printf '%s' "${WORKER_HF_HOME}"
   else
     printf '%s/.cache/huggingface' "$(remote_home)"
+  fi
+}
+
+worker_home() {
+  local cache
+  cache="$(worker_hf_home)"
+  if [[ "${cache}" == */.cache/huggingface ]]; then
+    printf '%s' "${cache%/.cache/huggingface}"
+  else
+    die "WORKER_HF_HOME must end in /.cache/huggingface for MiaAI's mounted-cache layout"
   fi
 }
 
@@ -352,16 +437,15 @@ worker_snapshot_path() {
   printf '%s/hub/%s/snapshots/%s' "$(worker_hf_home)" "$(model_cache_name)" "${MODEL_REVISION}"
 }
 
-container_snapshot_path() {
-  printf '/root/.cache/huggingface/hub/%s/snapshots/%s' \
-    "$(model_cache_name)" "${MODEL_REVISION}"
-}
-
 verify_snapshot() {
   local snapshot="$1" label="$2" count
   [[ -f "${snapshot}/config.json" ]] || die "${label}: missing config.json in pinned snapshot"
+  [[ -f "${snapshot}/processor_config.json" ]] \
+    || die "${label}: missing processor_config.json in pinned snapshot"
   [[ -f "${snapshot}/model.safetensors.index.json" ]] \
     || die "${label}: missing model.safetensors.index.json"
+  [[ -f "${snapshot}/chat_template.jinja" ]] \
+    || die "${label}: missing chat_template.jinja"
   count="$(find -L "${snapshot}" -maxdepth 1 -type f -name '*.safetensors' | wc -l | tr -d ' ')"
   (( count >= 120 )) || die "${label}: only ${count}/120 safetensor shards are present"
   log "${label}: pinned snapshot verified (${count} shards)"
@@ -370,10 +454,22 @@ verify_snapshot() {
 verify_worker_snapshot() {
   local snapshot count
   snapshot="$(worker_snapshot_path)"
-  wrun "test -f '${snapshot}/config.json' && test -f '${snapshot}/model.safetensors.index.json'" \
+  wrun "test -f '${snapshot}/config.json' && test -f '${snapshot}/processor_config.json' && test -f '${snapshot}/model.safetensors.index.json' && test -f '${snapshot}/chat_template.jinja'" \
     || return 1
   count="$(wrun "find -L '${snapshot}' -maxdepth 1 -type f -name '*.safetensors' | wc -l" | tr -d ' ')"
   (( count >= 120 ))
+}
+
+pin_model_refs() {
+  local head_repo head_tmp worker_repo
+  head_repo="${HF_HOME}/hub/$(model_cache_name)"
+  worker_repo="$(worker_hf_home)/hub/$(model_cache_name)"
+  mkdir -p "${head_repo}/refs"
+  head_tmp="$(mktemp "${head_repo}/refs/.main.ml-compute.XXXXXX")"
+  printf '%s\n' "${MODEL_REVISION}" >"${head_tmp}"
+  mv "${head_tmp}" "${head_repo}/refs/main"
+  wrun "mkdir -p '${worker_repo}/refs'; printf '%s\\n' '${MODEL_REVISION}' > '${worker_repo}/refs/.main.ml-compute'; mv '${worker_repo}/refs/.main.ml-compute' '${worker_repo}/refs/main'"
+  log "Pinned MiaAI cache refs/main to ${MODEL_REVISION} on both nodes"
 }
 
 check_disk() {
@@ -409,6 +505,7 @@ check_launch_memory() {
 }
 
 check_host() {
+  check_recipe_pin
   validate_profile
   need_cmd docker
   need_cmd curl
@@ -420,8 +517,7 @@ check_host() {
   docker info >/dev/null 2>&1 || die "Docker daemon is unavailable on the head"
   nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | grep -q GB10 \
     || die "NVIDIA GB10 was not detected on the head"
-  wrun "test \"\$(uname -m)\" = aarch64" \
-    || die "Worker is not aarch64"
+  wrun "test \"\$(uname -m)\" = aarch64" || die "Worker is not aarch64"
   worker_docker info >/dev/null 2>&1 || die "Docker daemon is unavailable on the worker"
   wrun "nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | grep -q GB10" \
     || die "NVIDIA GB10 was not detected on the worker"
@@ -429,62 +525,82 @@ check_host() {
     || die "Direct RoCE address ${WORKER_CX7_IP} is unreachable from the head"
   check_disk
   check_proxy_key
-  log "Dual-Spark GLM preflight passed"
+  log "Pinned MiaAI dual-Spark GLM preflight passed"
+}
+
+image_revision() {
+  docker image inspect --format '{{ index .Config.Labels "org.ml-compute.upstream.revision" }}' \
+    "$1" 2>/dev/null || true
+}
+
+worker_image_revision() {
+  worker_docker image inspect --format '{{ index .Config.Labels "org.ml-compute.upstream.revision" }}' \
+    "$1" 2>/dev/null || true
+}
+
+build_image_on_head() {
+  local kernel_dockerfile serving_dockerfile
+  kernel_dockerfile="${RECIPE_DIR}/files/Dockerfile"
+  serving_dockerfile="${RECIPE_DIR}/files/Dockerfile.mm-ray"
+  [[ -f "${kernel_dockerfile}" && -f "${serving_dockerfile}" ]] \
+    || die "Pinned MiaAI Dockerfiles are missing under ${RECIPE_DIR}/files"
+
+  if ! docker image inspect "${VLLM_BASE_IMAGE}" >/dev/null 2>&1; then
+    docker pull "${VLLM_BASE_IMAGE}"
+  fi
+
+  log "Building MiaAI SM121/NoPE kernel image ${KERNEL_IMAGE}"
+  {
+    awk -v from="FROM ${VLLM_BASE_IMAGE}" 'NR == 1 {$0 = from} {print}' \
+      "${kernel_dockerfile}"
+    printf '\nLABEL org.ml-compute.upstream.revision="%s"\n' "${UPSTREAM_REVISION}"
+  } | docker build --network host -f - --tag "${KERNEL_IMAGE}" "${RECIPE_DIR}/files"
+
+  log "Building MiaAI Ray/MM serving image ${VLLM_IMAGE}"
+  {
+    awk -v from="FROM ${KERNEL_IMAGE}" 'NR == 1 {$0 = from} {print}' \
+      "${serving_dockerfile}"
+    printf '\nLABEL org.ml-compute.upstream.revision="%s" org.ml-compute.ray.version="%s"\n' \
+      "${UPSTREAM_REVISION}" "${RAY_VERSION}"
+  } | docker build --network host -f - --tag "${VLLM_IMAGE}" "${RECIPE_DIR}/files"
+}
+
+ship_image_to_worker() {
+  log "Shipping ${VLLM_IMAGE} to worker via docker save | docker load"
+  docker save "${VLLM_IMAGE}" | wrun 'docker load >/dev/null'
 }
 
 ensure_image() {
+  check_recipe_pin
   validate_profile
-  [[ -f "${RUNTIME_DOCKERFILE}" ]] || die "Missing runtime Dockerfile: ${RUNTIME_DOCKERFILE}"
-
-  if docker image inspect "${VLLM_BASE_IMAGE}" >/dev/null 2>&1; then
-    log "Pinned GLM base image present on head"
-  else
-    docker pull "${VLLM_BASE_IMAGE}"
+  local head_revision worker_revision
+  head_revision="$(image_revision "${VLLM_IMAGE}")"
+  worker_revision="$(worker_image_revision "${VLLM_IMAGE}")"
+  if [[ "${head_revision}" != "${UPSTREAM_REVISION}" ]]; then
+    build_image_on_head
+    head_revision="$(image_revision "${VLLM_IMAGE}")"
   fi
-  if worker_docker image inspect "${VLLM_BASE_IMAGE}" >/dev/null 2>&1; then
-    log "Pinned GLM base image present on worker"
-  else
-    worker_docker pull "${VLLM_BASE_IMAGE}"
+  [[ "${head_revision}" == "${UPSTREAM_REVISION}" ]] \
+    || die "Head image is not labeled for the pinned MiaAI revision"
+  if [[ "${worker_revision}" != "${UPSTREAM_REVISION}" ]]; then
+    ship_image_to_worker
+    worker_revision="$(worker_image_revision "${VLLM_IMAGE}")"
   fi
-
-  local head_ray head_revision worker_ray worker_revision
-  head_ray="$(docker image inspect --format '{{ index .Config.Labels "org.ml-compute.ray.version" }}' "${VLLM_IMAGE}" 2>/dev/null || true)"
-  head_revision="$(docker image inspect --format '{{ index .Config.Labels "org.ml-compute.runtime.revision" }}' "${VLLM_IMAGE}" 2>/dev/null || true)"
-  if [[ "${head_ray}" == "${RAY_VERSION}" && "${head_revision}" == "${RUNTIME_LAYER_REVISION}" ]]; then
-    log "Ray-enabled GLM image present on head (Ray ${head_ray}, layer r${head_revision})"
-  else
-    log "Building Ray-enabled GLM image on head (Ray ${RAY_VERSION}, layer r${RUNTIME_LAYER_REVISION})"
-    docker build \
-      --build-arg "BASE_IMAGE=${VLLM_BASE_IMAGE}" \
-      --build-arg "RAY_VERSION=${RAY_VERSION}" \
-      --build-arg "RUNTIME_LAYER_REVISION=${RUNTIME_LAYER_REVISION}" \
-      --tag "${VLLM_IMAGE}" - <"${RUNTIME_DOCKERFILE}"
-  fi
-
-  worker_ray="$(worker_docker image inspect --format '{{ index .Config.Labels "org.ml-compute.ray.version" }}' "${VLLM_IMAGE}" 2>/dev/null || true)"
-  worker_revision="$(worker_docker image inspect --format '{{ index .Config.Labels "org.ml-compute.runtime.revision" }}' "${VLLM_IMAGE}" 2>/dev/null || true)"
-  if [[ "${worker_ray}" == "${RAY_VERSION}" && "${worker_revision}" == "${RUNTIME_LAYER_REVISION}" ]]; then
-    log "Ray-enabled GLM image present on worker (Ray ${worker_ray}, layer r${worker_revision})"
-  else
-    log "Building Ray-enabled GLM image on worker (Ray ${RAY_VERSION}, layer r${RUNTIME_LAYER_REVISION})"
-    worker_docker_build
-  fi
+  [[ "${worker_revision}" == "${UPSTREAM_REVISION}" ]] \
+    || die "Worker image is not labeled for the pinned MiaAI revision"
+  log "MiaAI SM121 serving image is ready on both nodes (Ray ${RAY_VERSION})"
 }
 
 gpu_check() {
   ensure_image
   local probe
-  probe="python3 -c 'import importlib.metadata as m, os, ray, torch, vllm; names={d.metadata.get(\"Name\", \"\").lower().replace(\"_\", \"-\") for d in m.distributions()}; assert torch.cuda.is_available(); assert \"cupy-cuda12x\" not in names; assert os.environ[\"VLLM_USE_RAY_V2_EXECUTOR_BACKEND\"] == \"1\"; print(torch.cuda.get_device_name(0), vllm.__version__, ray.__version__, \"ray_v2=1\")'"
-  docker run --rm --gpus all --entrypoint /bin/bash \
-    -e VLLM_USE_RAY_V2_EXECUTOR_BACKEND="${VLLM_USE_RAY_V2_EXECUTOR_BACKEND}" \
-    "${VLLM_IMAGE}" -lc "${probe}"
-  worker_docker run --rm --gpus all --entrypoint /bin/bash \
-    -e VLLM_USE_RAY_V2_EXECUTOR_BACKEND="${VLLM_USE_RAY_V2_EXECUTOR_BACKEND}" \
-    "${VLLM_IMAGE}" -lc "${probe}"
+  probe="python3 -c 'import importlib.metadata as m, pathlib, ray, torch, vllm; names={d.metadata.get(\"Name\", \"\").lower().replace(\"_\", \"-\") for d in m.distributions()}; cuda=pathlib.Path(\"/usr/local/lib/python3.12/dist-packages/vllm/platforms/cuda.py\").read_text(); sm90=pathlib.Path(\"/usr/local/lib/python3.12/dist-packages/vllm/v1/attention/backends/mla/flashinfer_mla_sparse_sm90.py\").read_text(); assert torch.cuda.is_available(); assert ray.__version__ == \"${RAY_VERSION}\"; assert \"cupy-cuda12x\" not in names; assert \"FLASHINFER_MLA_SPARSE_SM90\" in cuda; assert \"capability.major in (9, 12)\" in sm90; print(torch.cuda.get_device_name(0), \"vllm\", vllm.__version__, \"ray\", ray.__version__, \"sm121_nope_patch=1\")'"
+  docker run --rm --gpus all --entrypoint /bin/bash "${VLLM_IMAGE}" -lc "${probe}"
+  worker_docker run --rm --gpus all --entrypoint /bin/bash "${VLLM_IMAGE}" -lc "${probe}"
 }
 
 download_on_head() {
-  local snapshot
+  local snapshot python
   snapshot="$(snapshot_path)"
   if [[ -d "${snapshot}" ]]; then
     verify_snapshot "${snapshot}" "head cache"
@@ -497,17 +613,15 @@ download_on_head() {
   elif command -v huggingface-cli >/dev/null 2>&1; then
     HF_HOME="${HF_HOME}" huggingface-cli download "${MODEL_ID}" --revision "${MODEL_REVISION}"
   else
-    docker run --rm --network host --entrypoint python3 \
-      -e HF_HOME=/root/.cache/huggingface -e HF_TOKEN="${HF_TOKEN:-}" \
-      -v "${HF_HOME}:/root/.cache/huggingface" \
-      "${VLLM_IMAGE}" -c \
-      "from huggingface_hub import snapshot_download; snapshot_download('${MODEL_ID}', revision='${MODEL_REVISION}', token=None)"
+    python="$(project_python)"
+    HF_HOME="${HF_HOME}" MODEL_ID="${MODEL_ID}" MODEL_REVISION="${MODEL_REVISION}" \
+      "${python}" -c 'import os; from huggingface_hub import snapshot_download; snapshot_download(os.environ["MODEL_ID"], revision=os.environ["MODEL_REVISION"], token=os.environ.get("HF_TOKEN"))'
   fi
   verify_snapshot "${snapshot}" "head cache"
 }
 
 sync_weights_to_worker() {
-  local head_repo worker_repo worker_cache
+  local head_repo worker_repo
   if verify_worker_snapshot; then
     log "Worker cache: pinned snapshot already verified"
     return
@@ -515,12 +629,11 @@ sync_weights_to_worker() {
   [[ "${DOWNLOAD_MODE}" == "rsync" ]] \
     || die "Only DOWNLOAD_MODE=rsync is reviewed for this two-Spark recipe"
   head_repo="${HF_HOME}/hub/$(model_cache_name)"
-  worker_cache="$(worker_hf_home)"
-  worker_repo="${worker_cache}/hub/$(model_cache_name)"
+  worker_repo="$(worker_hf_home)/hub/$(model_cache_name)"
   wrun "mkdir -p '${worker_repo}'"
   log "Mirroring the pinned GLM cache to the worker over RoCE (resumable)"
   rsync -a --partial --info=progress2,stats1 --exclude '.locks' \
-    -e 'ssh -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new -o BatchMode=yes' \
+    -e 'ssh -o ConnectTimeout=15 -o StrictHostKeyChecking=accept-new -o BatchMode=yes' \
     "${head_repo}/" "$(worker_ssh_target):${worker_repo}/"
   verify_worker_snapshot || die "Worker snapshot verification failed after rsync"
   log "Worker cache: pinned snapshot verified"
@@ -529,10 +642,65 @@ sync_weights_to_worker() {
 download_model() {
   validate_profile
   check_disk
-  ensure_image
   download_on_head
   sync_weights_to_worker
+  pin_model_refs
 }
+
+run_upstream() (
+  check_recipe_pin
+  validate_profile
+  local target remote_root private_args
+  target="$(worker_ssh_target)"
+  remote_root="$(worker_home)"
+  private_args="${EXTRA_ARGS:+${EXTRA_ARGS} }--host ${HOST_BIND}"
+  cd "${RECIPE_DIR}"
+  IMAGE="${VLLM_IMAGE}" \
+  RAY_VERSION="${RAY_VERSION}" \
+  HEAD_IP="${HEAD_CX7_IP}" \
+  WORKER_IP="${WORKER_CX7_IP}" \
+  WORKER_SSH="${target}" \
+  WORKER_HOME="${remote_root}" \
+  HEAD_CX7_IF="${HEAD_CX7_IF}" \
+  WORKER_CX7_IF="${WORKER_CX7_IF}" \
+  HEAD_CX7_IB="${HEAD_CX7_IB}" \
+  WORKER_CX7_IB="${WORKER_CX7_IB}" \
+  RAY_PORT="${RAY_HEAD_PORT}" \
+  RAY_OBJECT_STORE_MEMORY="${RAY_OBJECT_STORE_MEMORY}" \
+  TP="${TENSOR_PARALLEL_SIZE}" \
+  PORT="${PORT}" \
+  MTP_TOKENS="${MTP_SPECULATIVE_TOKENS}" \
+  MAX_MODEL_LEN="${MAX_MODEL_LEN}" \
+  GPU_MEM_UTIL="${GPU_MEMORY_UTILIZATION}" \
+  BLOCK_SIZE="${BLOCK_SIZE}" \
+  MAX_NUM_SEQS="${MAX_NUM_SEQS}" \
+  KV_CACHE_DTYPE="${KV_CACHE_DTYPE}" \
+  KV_CACHE_MEMORY="${KV_CACHE_MEMORY}" \
+  LIMIT_MM="${LIMIT_MM}" \
+  SKIP_MM_PROFILING="${SKIP_MM_PROFILING}" \
+  MOE_BACKEND="${MOE_BACKEND}" \
+  ENFORCE_EAGER="${ENFORCE_EAGER}" \
+  TORCH_CUDA_ARCH_LIST="${TORCH_CUDA_ARCH_LIST}" \
+  FLASHINFER_CUDA_ARCH_LIST="${FLASHINFER_CUDA_ARCH_LIST}" \
+  HF_HOME="${HF_HOME}" \
+  READY_TIMEOUT="${VLLM_ENGINE_READY_TIMEOUT_S}" \
+  CLUSTER_WAIT_ITERS="${CLUSTER_WAIT_ITERS}" \
+  CACHE_VOLUME="${CACHE_VOLUME}" \
+  USE_HOST_NCCL="${USE_HOST_NCCL}" \
+  NCCL_HOST_DIR="${NCCL_HOST_DIR:-${HOME}/nccl-2.30.7}" \
+  WORKER_NCCL_HOST_DIR="${WORKER_NCCL_HOST_DIR:-${remote_root}/nccl-2.30.7}" \
+  NCCL_SO_NAME="${NCCL_SO_NAME}" \
+  NCCL_DEBUG="${NCCL_DEBUG}" \
+  NCCL_IB_GID_INDEX="${NCCL_IB_GID_INDEX}" \
+  NCCL_CROSS_NIC="${NCCL_CROSS_NIC}" \
+  CHAT_TEMPLATE_URL="https://huggingface.co/${MODEL_ID}/resolve/${MODEL_REVISION}/chat_template.jinja" \
+  HF_HUB_OFFLINE=1 \
+  SKIP_DOWNLOAD=1 \
+  SKIP_SYNC=1 \
+  EXTRA_ARGS="${private_args}" \
+  TAIL=0 \
+  ./start.sh "$@"
+)
 
 run_proxy_cli() {
   local action="$1" python api_key
@@ -567,225 +735,26 @@ raw_model_ready() {
     >/dev/null 2>&1
 }
 
-stop_ray_cluster() {
-  docker rm -f "${GLM53_HEAD_CONTAINER}" >/dev/null 2>&1 || true
-  worker_docker rm -f "${GLM53_WORKER_CONTAINER}" >/dev/null 2>&1 || true
-}
-
-check_port_available() {
-  local host="$1" port="$2" label="$3"
-  if (exec 3<>"/dev/tcp/${host}/${port}") >/dev/null 2>&1; then
-    die "${label} port ${host}:${port} is already in use; stop the active model backend first"
-  fi
-}
-
-start_ray_cluster() {
-  local worker_cache pin=()
-  worker_cache="$(worker_hf_home)"
-  [[ -n "${CPUSET}" ]] && pin=(--cpuset-cpus "${CPUSET}")
-  mkdir -p "${LOG_DIR}" "${HF_HOME}"
-  wrun "mkdir -p '${worker_cache}'"
-
-  log "Starting Ray head on ${HEAD_CX7_IP}:${RAY_HEAD_PORT}"
-  docker run -d \
-    --name "${GLM53_HEAD_CONTAINER}" \
-    --entrypoint /bin/bash \
-    --network host --ipc host --gpus all \
-    --device /dev/infiniband --cap-add IPC_LOCK \
-    --ulimit memlock=-1 --ulimit stack=67108864 \
-    "${pin[@]}" \
-    -v "${HF_HOME}:/root/.cache/huggingface" \
-    -v "${LOG_DIR}:/ml-compute-logs" \
-    -e VLLM_HOST_IP="${HEAD_CX7_IP}" \
-    -e UCX_NET_DEVICES="${HEAD_CX7_IF}" \
-    -e NCCL_SOCKET_IFNAME="${HEAD_CX7_IF}" \
-    -e OMPI_MCA_btl_tcp_if_include="${HEAD_CX7_IF}" \
-    -e GLOO_SOCKET_IFNAME="${HEAD_CX7_IF}" \
-    -e TP_SOCKET_IFNAME="${HEAD_CX7_IF}" \
-    -e NCCL_IB_HCA="${HEAD_CX7_IB}" \
-    -e NCCL_IB_DISABLE=0 -e NCCL_IB_ROCE_VERSION_NUM=2 -e NCCL_IB_GID_INDEX=3 \
-    -e NCCL_NET=IB -e NCCL_NET_PLUGIN=none -e NCCL_NVLS_ENABLE=0 \
-    -e NCCL_CUMEM_ENABLE=0 -e NCCL_CROSS_NIC="${NCCL_CROSS_NIC}" \
-    -e NCCL_DEBUG="${NCCL_DEBUG}" -e RAY_memory_monitor_refresh_ms=0 \
-    -e MASTER_ADDR="${HEAD_CX7_IP}" \
-    -e HF_HUB_OFFLINE=1 -e TRANSFORMERS_OFFLINE=1 \
-    -e VLLM_ENGINE_READY_TIMEOUT_S="${VLLM_ENGINE_READY_TIMEOUT_S}" \
-    -e VLLM_USE_RAY_V2_EXECUTOR_BACKEND="${VLLM_USE_RAY_V2_EXECUTOR_BACKEND}" \
-    "${VLLM_IMAGE}" -lc \
-    "exec ray start --block --head --node-ip-address=${HEAD_CX7_IP} --port=${RAY_HEAD_PORT} --include-dashboard=false" \
-    >/dev/null
-
-  sleep 3
-  docker ps --format '{{.Names}}' | grep -qx "${GLM53_HEAD_CONTAINER}" \
-    || die "Ray head container exited; inspect: docker logs ${GLM53_HEAD_CONTAINER}"
-
-  log "Starting Ray worker on ${WORKER_CX7_IP}"
-  worker_docker run -d \
-    --name "${GLM53_WORKER_CONTAINER}" \
-    --entrypoint /bin/bash \
-    --network host --ipc host --gpus all \
-    --device /dev/infiniband --cap-add IPC_LOCK \
-    --ulimit memlock=-1 --ulimit stack=67108864 \
-    "${pin[@]}" \
-    -v "${worker_cache}:/root/.cache/huggingface" \
-    -e VLLM_HOST_IP="${WORKER_CX7_IP}" \
-    -e UCX_NET_DEVICES="${WORKER_CX7_IF}" \
-    -e NCCL_SOCKET_IFNAME="${WORKER_CX7_IF}" \
-    -e OMPI_MCA_btl_tcp_if_include="${WORKER_CX7_IF}" \
-    -e GLOO_SOCKET_IFNAME="${WORKER_CX7_IF}" \
-    -e TP_SOCKET_IFNAME="${WORKER_CX7_IF}" \
-    -e NCCL_IB_HCA="${WORKER_CX7_IB}" \
-    -e NCCL_IB_DISABLE=0 -e NCCL_IB_ROCE_VERSION_NUM=2 -e NCCL_IB_GID_INDEX=3 \
-    -e NCCL_NET=IB -e NCCL_NET_PLUGIN=none -e NCCL_NVLS_ENABLE=0 \
-    -e NCCL_CUMEM_ENABLE=0 -e NCCL_CROSS_NIC="${NCCL_CROSS_NIC}" \
-    -e NCCL_DEBUG="${NCCL_DEBUG}" -e RAY_memory_monitor_refresh_ms=0 \
-    -e MASTER_ADDR="${HEAD_CX7_IP}" \
-    -e HF_HUB_OFFLINE=1 -e TRANSFORMERS_OFFLINE=1 \
-    -e VLLM_ENGINE_READY_TIMEOUT_S="${VLLM_ENGINE_READY_TIMEOUT_S}" \
-    -e VLLM_USE_RAY_V2_EXECUTOR_BACKEND="${VLLM_USE_RAY_V2_EXECUTOR_BACKEND}" \
-    "${VLLM_IMAGE}" -lc \
-    "exec ray start --block --address=${HEAD_CX7_IP}:${RAY_HEAD_PORT} --node-ip-address=${WORKER_CX7_IP}" \
-    >/dev/null
-
-  local attempt
-  for attempt in $(seq 1 60); do
-    if docker exec "${GLM53_HEAD_CONTAINER}" python3 -c \
-      'import ray; ray.init(address="auto", logging_level="ERROR"); raise SystemExit(0 if ray.cluster_resources().get("GPU", 0) >= 2 else 1)' \
-      >/dev/null 2>&1; then
-      log "Ray cluster reports two GPUs"
-      return
-    fi
-    sleep 2
-  done
-  die "Ray worker did not join within 120 seconds"
-}
-
-launch_vllm() {
-  local attempt command launcher
-  local args=(
-    vllm serve "$(container_snapshot_path)"
-    --served-model-name "${SERVED_MODEL_NAME}"
-    --tensor-parallel-size "${TENSOR_PARALLEL_SIZE}"
-    --distributed-executor-backend ray
-    --host "${HOST_BIND}"
-    --port "${PORT}"
-    --max-model-len "${MAX_MODEL_LEN}"
-    --max-num-seqs "${MAX_NUM_SEQS}"
-    --max-num-batched-tokens "${MAX_NUM_BATCHED_TOKENS}"
-    --gpu-memory-utilization "${GPU_MEMORY_UTILIZATION}"
-    --tool-call-parser "${TOOL_CALL_PARSER}"
-    --enable-auto-tool-choice
-    --reasoning-parser "${REASONING_PARSER}"
-    --moe-backend "${MOE_BACKEND}"
-    --trust-remote-code
-  )
-  [[ "${KV_CACHE_DTYPE}" != "auto" ]] && args+=(--kv-cache-dtype "${KV_CACHE_DTYPE}")
-  [[ "${ENFORCE_EAGER}" == "1" ]] && args+=(--enforce-eager)
-  if (( MTP_SPECULATIVE_TOKENS > 0 )); then
-    args+=(--speculative-config "{\"method\":\"mtp\",\"num_speculative_tokens\":${MTP_SPECULATIVE_TOKENS}}")
-  fi
-  printf -v command '%q ' "${args[@]}"
-  : >"${VLLM_LOG}"
-  log "Launching GLM vLLM TP=2 through Ray"
-  printf -v launcher \
-    'rm -f %q %q; ( exec %s) >>/ml-compute-logs/vllm.log 2>&1 & child=$!; printf "%%s\\n" "$child" >%q; wait "$child"; status=$?; printf "%%s\\n" "$status" >%q; exit "$status"' \
-    "${VLLM_PID_FILE}" "${VLLM_EXIT_FILE}" "${command}" \
-    "${VLLM_PID_FILE}" "${VLLM_EXIT_FILE}"
-  docker exec -d "${GLM53_HEAD_CONTAINER}" /bin/bash -lc \
-    "${launcher}"
-
-  for attempt in $(seq 1 50); do
-    if vllm_process_running; then
-      log "vLLM launcher PID $(vllm_pid) is running"
-      return
-    fi
-    if vllm_exit_status >/dev/null; then
-      sleep 2
-      show_failure_diagnostics
-      die "vLLM exited with status $(vllm_exit_status) during launch"
-    fi
-    sleep 0.1
-  done
-  show_failure_diagnostics
-  die "vLLM launcher did not publish a live PID within 5 seconds"
-}
-
-vllm_pid() {
-  local pid
-  pid="$(docker exec "${GLM53_HEAD_CONTAINER}" /bin/bash -lc \
-    "cat '${VLLM_PID_FILE}' 2>/dev/null" 2>/dev/null || true)"
-  [[ "${pid}" =~ ^[0-9]+$ ]] || return 1
-  printf '%s\n' "${pid}"
-}
-
-vllm_process_running() {
-  local pid
-  vllm_exit_status >/dev/null 2>&1 && return 1
-  pid="$(vllm_pid)" || return 1
-  docker exec "${GLM53_HEAD_CONTAINER}" /bin/bash -lc \
-    "kill -0 '${pid}'" >/dev/null 2>&1
-}
-
-vllm_exit_status() {
-  local status
-  status="$(docker exec "${GLM53_HEAD_CONTAINER}" /bin/bash -lc \
-    "cat '${VLLM_EXIT_FILE}' 2>/dev/null" 2>/dev/null || true)"
-  [[ "${status}" =~ ^[0-9]+$ ]] || return 1
-  printf '%s\n' "${status}"
-}
-
-wait_ready() {
-  local deadline now
-  deadline="$(( $(date +%s) + VLLM_ENGINE_READY_TIMEOUT_S ))"
-  while :; do
-    if raw_model_ready; then
-      log "Raw GLM API is ready on ${HOST_BIND}:${PORT}"
-      return
-    fi
-    if ! vllm_process_running; then
-      # Let the launcher persist the child's status and let Ray flush worker
-      # stderr before collecting diagnostics.
-      sleep 2
-      show_failure_diagnostics
-      die "vLLM exited with status $(vllm_exit_status 2>/dev/null || printf unknown) before readiness"
-    fi
-    now="$(date +%s)"
-    if (( now >= deadline )); then
-      show_failure_diagnostics
-      die "vLLM did not become ready within ${VLLM_ENGINE_READY_TIMEOUT_S} seconds"
-    fi
-    sleep 15
-  done
+stop_legacy_cluster() {
+  docker rm -f glm53-flash-ray-head >/dev/null 2>&1 || true
+  worker_docker rm -f glm53-flash-ray-worker >/dev/null 2>&1 || true
 }
 
 show_failure_diagnostics() {
-  local pid scan status
-  scan='root=/tmp/ray/session_latest/logs; [ -d "$root" ] || exit 0; find "$root" -maxdepth 1 -type f \( -name "worker-*.err" -o -name "worker-*.out" -o -name "python-core-worker-*.log" \) -size +0c -printf "%T@ %p\\n" | sort -n | tail -n 16 | cut -d" " -f2- | while IFS= read -r file; do printf "\\n===== %s =====\\n" "$file"; tail -n 160 "$file"; done'
-
-  printf '\nHead vLLM driver log:\n'
-  tail -n 400 "${VLLM_LOG}" 2>&1 || true
-  pid="$(vllm_pid 2>/dev/null || true)"
-  status="$(vllm_exit_status 2>/dev/null || true)"
-  printf '\nvLLM launcher state: pid=%s running=%s exit_status=%s\n' \
-    "${pid:-unknown}" "$([[ -n "${pid}" ]] && vllm_process_running && printf yes || printf no)" \
-    "${status:-pending}"
-  if [[ -n "${pid}" ]]; then
-    docker exec "${GLM53_HEAD_CONTAINER}" ps -p "${pid}" -o pid=,ppid=,stat=,etime=,args= \
-      2>&1 || true
-  fi
-  printf '\nGLM runtime versions (head):\n'
-  docker exec "${GLM53_HEAD_CONTAINER}" python3 -c \
-    'import ray, vllm; print("vllm", vllm.__version__, "ray", ray.__version__)' \
-    2>&1 || true
+  local scan
+  scan='root=/tmp/ray/session_latest/logs; [ -d "$root" ] || exit 0; find "$root" -maxdepth 1 -type f \( -name "worker-*.err" -o -name "worker-*.out" -o -name "python-core-worker-*.log" \) -size +0c -printf "%T@ %p\\n" | sort -n | tail -n 16 | cut -d" " -f2- | while IFS= read -r file; do printf "\\n===== %s =====\\n" "$file"; tail -n 180 "$file"; done'
+  printf '\nHead container log:\n'
+  docker logs --tail 400 "${GLM53_HEAD_CONTAINER}" 2>&1 || true
   printf '\nRay cluster status:\n'
   docker exec "${GLM53_HEAD_CONTAINER}" ray status 2>&1 || true
-  printf '\nMatching Ray error logs (head):\n'
+  printf '\nRecent Ray worker logs (head):\n'
   docker exec "${GLM53_HEAD_CONTAINER}" /bin/bash -lc "${scan}" 2>&1 || true
-  printf '\nMatching Ray error logs (worker):\n'
+  printf '\nRecent Ray worker logs (worker):\n'
   worker_docker exec "${GLM53_WORKER_CONTAINER}" /bin/bash -lc "${scan}" 2>&1 || true
 }
 
 start_service() {
+  check_recipe_pin
   validate_profile
   check_proxy_key
   check_public_exposure
@@ -794,14 +763,12 @@ start_service() {
   else
     verify_snapshot "$(snapshot_path)" "head cache"
     verify_worker_snapshot || die "Pinned worker snapshot is missing; run glm53-flash download"
+    pin_model_refs
     ensure_image
-    stop_ray_cluster
-    check_port_available "127.0.0.1" "${PORT}" "raw API"
-    check_port_available "${HEAD_CX7_IP}" "${RAY_HEAD_PORT}" "Ray head"
+    stop_legacy_cluster
+    run_upstream stop >/dev/null 2>&1 || true
     check_launch_memory
-    start_ray_cluster
-    launch_vllm
-    wait_ready
+    run_upstream start
   fi
   run_proxy_cli serve
   if ! run_proxy_cli smoke; then
@@ -813,18 +780,7 @@ start_service() {
 }
 
 show_status() {
-  printf 'Head Ray container:\n'
-  docker ps -a --filter "name=${GLM53_HEAD_CONTAINER}" --format '  {{.Names}}  {{.Status}}' || true
-  printf 'Worker Ray container:\n'
-  worker_docker ps -a --filter "name=${GLM53_WORKER_CONTAINER}" --format '  {{.Names}}  {{.Status}}' || true
-  if docker ps --format '{{.Names}}' | grep -qx "${GLM53_HEAD_CONTAINER}"; then
-    docker exec "${GLM53_HEAD_CONTAINER}" ray status 2>/dev/null || true
-  fi
-  if raw_model_ready; then
-    log "Raw GLM API: ready"
-  else
-    warn "Raw GLM API: unavailable"
-  fi
+  run_upstream status
   run_proxy_cli status
 }
 
@@ -850,7 +806,7 @@ inference_smoke() (
     "http://127.0.0.1:${DSPARK_PROXY_PORT}/v1/chat/completions" \
     -H "Authorization: Bearer ${api_key}" \
     -H 'Content-Type: application/json' \
-    -d "{\"model\":\"${SERVED_MODEL_NAME}\",\"messages\":[{\"role\":\"user\",\"content\":\"Return only the number 391.\"}],\"temperature\":0,\"max_tokens\":64}" \
+    -d "{\"model\":\"${SERVED_MODEL_NAME}\",\"messages\":[{\"role\":\"user\",\"content\":\"Return only the number 391.\"}],\"temperature\":0,\"max_tokens\":64,\"chat_template_kwargs\":{\"enable_thinking\":false}}" \
     -o "${response_file}"
   "${python}" - "${response_file}" <<'PY'
 import json
@@ -868,15 +824,22 @@ PY
 stop_service() {
   load_profile
   run_proxy_cli stop || true
-  stop_ray_cluster
-  log "Stopped dual-Spark GLM service; weights, image, and logs were preserved"
+  if [[ -d "${RECIPE_DIR}/.git" ]]; then
+    run_upstream stop || true
+  else
+    docker rm -f "${GLM53_HEAD_CONTAINER}" >/dev/null 2>&1 || true
+    worker_docker rm -f "${GLM53_WORKER_CONTAINER}" >/dev/null 2>&1 || true
+  fi
+  stop_legacy_cluster
+  log "Stopped dual-Spark GLM service; weights, images, and compile caches were preserved"
 }
 
 action="${1:-help}"
 case "${action}" in
+  bootstrap) bootstrap ;;
   configure) configure ;;
   check) check_host ;;
-  setup) configure; check_host ;;
+  setup) bootstrap; configure; check_host ;;
   pull) ensure_image ;;
   download) download_model ;;
   gpu-check) gpu_check ;;
@@ -885,18 +848,17 @@ case "${action}" in
   diagnose) load_profile; show_failure_diagnostics ;;
   memory) load_profile; show_memory ;;
   smoke) load_profile; inference_smoke ;;
-  logs) load_profile; touch "${VLLM_LOG}"; exec tail -n 100 -f "${VLLM_LOG}" ;;
-  logs-worker) load_profile; exec ssh -t "$(worker_ssh_target)" docker logs -f "${GLM53_WORKER_CONTAINER}" ;;
+  logs) load_profile; run_upstream logs head ;;
+  logs-worker) load_profile; run_upstream logs worker ;;
   stop) stop_service ;;
-  all) configure; check_host; ensure_image; download_model; gpu_check; start_service ;;
+  update) sync_recipe_pin ;;
+  all) bootstrap; configure; check_host; download_model; ensure_image; gpu_check; start_service ;;
   path)
     load_profile
-    printf 'profile=%s\nruntime=%s\nhf_home=%s\nlog=%s\nmodel_revision=%s\nbase_image=%s\nimage=%s\nray_version=%s\nruntime_layer_revision=%s\nray_v2_executor=%s\nruntime_dockerfile=%s\nvllm_cluster_reference=%s\n' \
-      "${PROFILE_FILE}" "${RUNTIME_DIR}" "${HF_HOME}" "${VLLM_LOG}" \
-      "${MODEL_REVISION}" "${VLLM_BASE_IMAGE}" "${VLLM_IMAGE}" \
-      "${RAY_VERSION}" "${RUNTIME_LAYER_REVISION}" \
-      "${VLLM_USE_RAY_V2_EXECUTOR_BACKEND}" "${RUNTIME_DOCKERFILE}" \
-      "${VLLM_CLUSTER_REFERENCE}"
+    printf 'recipe=%s\nprofile=%s\nruntime=%s\nhf_home=%s\nupstream_revision=%s\nmodel_revision=%s\nbase_image=%s\nkernel_image=%s\nimage=%s\nray_version=%s\nobject_store_bytes=%s\n' \
+      "${RECIPE_DIR}" "${PROFILE_FILE}" "${RUNTIME_DIR}" "${HF_HOME}" \
+      "${UPSTREAM_REVISION}" "${MODEL_REVISION}" "${VLLM_BASE_IMAGE}" \
+      "${KERNEL_IMAGE}" "${VLLM_IMAGE}" "${RAY_VERSION}" "${RAY_OBJECT_STORE_MEMORY}"
     ;;
   help|-h|--help) usage ;;
   *) die "Unknown action: ${action}. Run glm53-flash help" ;;

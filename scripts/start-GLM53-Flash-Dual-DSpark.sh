@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Start GLM-5.3 Flash NVFP4 on the configured two-DGX-Spark cluster.
-# Pass --first-run to preflight, pull, download, mirror, GPU-check, and start.
+# Pass --first-run to pin MiaAI, build, download, mirror, GPU-check, and start.
 
 if [ -z "${BASH_VERSION:-}" ]; then
   exec bash "$0" "$@"
@@ -34,14 +34,13 @@ case "${1:-}" in
     cat <<'EOF'
 Usage: scripts/start-GLM53-Flash-Dual-DSpark.sh [--first-run]
 
-With no argument, validate the checked-in profile, start a two-node Ray
-cluster, launch private vLLM TP=2, and start the authenticated proxy on 8000.
---first-run also preflights both Sparks, pulls the digest-pinned dedicated
-arm64 image, and downloads/verifies/rsyncs the ~181 GiB model snapshot.
+With no argument, validate the checked-in profile, run MiaAI-Lab's pinned
+two-node Ray/vLLM lifecycle, and start the authenticated proxy on 8000.
+--first-run also clones the pinned upstream recipe, builds and ships its
+SM121/NoPE kernel image, and downloads/verifies/rsyncs the ~181 GiB snapshot.
 
-This is an experimental GB10 profile because the model publisher has not yet
-listed SM121 among its verified targets. The conservative default uses Marlin,
-eager execution, 32K context, and one request.
+The reviewed profile uses Ray 2.58 with 4 GiB object stores, Marlin + eager,
+FP8 KV, 256K context, and disabled MM dummy profiling during initialization.
 EOF
     exit 0
     ;;
