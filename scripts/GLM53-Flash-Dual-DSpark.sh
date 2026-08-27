@@ -146,7 +146,7 @@ MAX_NUM_SEQS|8
 GPU_MEMORY_UTILIZATION|0.84
 BLOCK_SIZE|2304
 KV_CACHE_DTYPE|fp8_e4m3
-KV_CACHE_MEMORY|
+KV_CACHE_MEMORY|4294967296
 MOE_BACKEND|marlin
 ENFORCE_EAGER|1
 TOOL_CALL_PARSER|glm47
@@ -260,6 +260,8 @@ validate_profile() {
     || die "BLOCK_SIZE must remain 2304 for MiaAI's DeepGEMM paged-MQA profile"
   [[ "${KV_CACHE_DTYPE}" == "fp8_e4m3" ]] \
     || die "KV_CACHE_DTYPE must remain fp8_e4m3 for the reviewed memory profile"
+  [[ "${KV_CACHE_MEMORY}" == "4294967296" ]] \
+    || die "KV_CACHE_MEMORY must remain pinned to 4 GiB on both UMA ranks"
   [[ "${MOE_BACKEND}" == "marlin" ]] \
     || die "MOE_BACKEND must remain marlin on GB10/SM121"
   [[ "${ENFORCE_EAGER}" == "1" ]] \
