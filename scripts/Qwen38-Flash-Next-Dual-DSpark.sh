@@ -112,9 +112,9 @@ load_profile() {
 HEAD_CX7_IP|192.168.177.10
 WORKER_CX7_IP|192.168.177.11
 HEAD_CX7_IF|enp1s0f1np1
-WORKER_CX7_IF|enp1s0f0np0
+WORKER_CX7_IF|enp1s0f1np1
 HEAD_CX7_IB|rocep1s0f1
-WORKER_CX7_IB|rocep1s0f0
+WORKER_CX7_IB|rocep1s0f1
 WORKER_USER|
 WORKER_HOST|totalpass@192.168.177.11
 WORKER_SSH|
@@ -342,6 +342,7 @@ validate_profile() {
 configure() {
   check_recipe_pin
   validate_profile
+  resolve_cluster_interfaces
   local env_tmp key
   env_tmp="$(mktemp "${RECIPE_DIR}/.env.ml-compute.XXXXXX")"
   {
@@ -358,7 +359,13 @@ configure() {
 run_upstream() {
   check_recipe_pin
   validate_profile
-  (cd "${RECIPE_DIR}" && ./start.sh "$@")
+  # configure() writes the IP-resolved device names to upstream .env. Do not
+  # let the checked-in compatibility hints exported by validate_profile()
+  # override that materialized mapping (upstream uses environment-first).
+  (
+    unset HEAD_CX7_IF WORKER_CX7_IF HEAD_CX7_IB WORKER_CX7_IB
+    cd "${RECIPE_DIR}" && ./start.sh "$@"
+  )
 }
 
 worker_ssh_target() {
@@ -369,6 +376,74 @@ worker_ssh_target() {
   else
     printf '%s' "${WORKER_HOST}"
   fi
+}
+
+wrun() {
+  local target
+  target="$(worker_ssh_target)"
+  ssh -o ConnectTimeout=15 -o StrictHostKeyChecking=accept-new -o BatchMode=yes \
+    "${target}" "$1"
+}
+
+local_netdev_for_ip() {
+  local wanted="$1"
+  ip -o -4 addr show | awk -v wanted="${wanted}" '
+    { split($4, address, "/") }
+    address[1] == wanted { print $2; exit }
+  '
+}
+
+worker_netdev_for_ip() {
+  local wanted="$1"
+  wrun "ip -o -4 addr show" | awk -v wanted="${wanted}" '
+    { split($4, address, "/") }
+    address[1] == wanted { print $2; exit }
+  '
+}
+
+local_hca_for_netdev() {
+  local netdev="$1" path
+  for path in /sys/class/infiniband/*/device/net/"${netdev}"; do
+    [[ -e "${path}" ]] || continue
+    basename "$(dirname "$(dirname "$(dirname "${path}")")")"
+    return
+  done
+}
+
+worker_hca_for_netdev() {
+  local netdev="$1"
+  wrun "for path in /sys/class/infiniband/*/device/net/'${netdev}'; do [ -e \"\$path\" ] || continue; basename \"\$(dirname \"\$(dirname \"\$(dirname \"\$path\")\")\")\"; break; done"
+}
+
+resolve_cluster_interfaces() {
+  local head_netdev worker_netdev head_hca worker_hca
+  need_cmd ip
+  head_netdev="$(local_netdev_for_ip "${HEAD_CX7_IP}")"
+  worker_netdev="$(worker_netdev_for_ip "${WORKER_CX7_IP}")"
+  [[ -n "${head_netdev}" ]] \
+    || die "No head interface owns configured address ${HEAD_CX7_IP}"
+  [[ -n "${worker_netdev}" ]] \
+    || die "No worker interface owns configured address ${WORKER_CX7_IP}"
+
+  head_hca="$(local_hca_for_netdev "${head_netdev}")"
+  worker_hca="$(worker_hca_for_netdev "${worker_netdev}")"
+  [[ -n "${head_hca}" ]] \
+    || die "No head RDMA HCA maps to ${head_netdev} (${HEAD_CX7_IP})"
+  [[ -n "${worker_hca}" ]] \
+    || die "No worker RDMA HCA maps to ${worker_netdev} (${WORKER_CX7_IP})"
+
+  if [[ "${HEAD_CX7_IF}" != "${head_netdev}" || "${HEAD_CX7_IB}" != "${head_hca}" ]]; then
+    warn "Head RoCE mapping detected as ${head_netdev}/${head_hca}; profile had ${HEAD_CX7_IF}/${HEAD_CX7_IB}"
+  fi
+  if [[ "${WORKER_CX7_IF}" != "${worker_netdev}" || "${WORKER_CX7_IB}" != "${worker_hca}" ]]; then
+    warn "Worker RoCE mapping detected as ${worker_netdev}/${worker_hca}; profile had ${WORKER_CX7_IF}/${WORKER_CX7_IB}"
+  fi
+  HEAD_CX7_IF="${head_netdev}"
+  WORKER_CX7_IF="${worker_netdev}"
+  HEAD_CX7_IB="${head_hca}"
+  WORKER_CX7_IB="${worker_hca}"
+  export HEAD_CX7_IF WORKER_CX7_IF HEAD_CX7_IB WORKER_CX7_IB
+  log "RoCE mapping: head ${HEAD_CX7_IP}=${HEAD_CX7_IF}/${HEAD_CX7_IB}, worker ${WORKER_CX7_IP}=${WORKER_CX7_IF}/${WORKER_CX7_IB}"
 }
 
 available_gib() {
@@ -457,8 +532,19 @@ start_service() {
   if raw_model_ready; then
     log "Pinned Qwen model is already ready on the private raw endpoint"
   else
+    # MiaAI's idempotent serve path returns success for any running head
+    # container, even when its scheduler already failed and the API is not
+    # ready. Remove that stale two-rank job so the newly materialized RoCE
+    # mapping and runtime profile are actually applied.
+    warn "Raw Qwen API is not ready; replacing any stale head/worker containers"
+    run_proxy_cli stop || true
+    run_upstream stop || true
     check_launch_memory
     run_upstream serve
+    if ! raw_model_ready; then
+      run_upstream stop || true
+      die "Upstream launcher returned without a ready Qwen model endpoint"
+    fi
   fi
   check_runtime_memory_headroom
   run_proxy_cli serve
