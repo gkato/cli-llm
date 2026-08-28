@@ -16,7 +16,7 @@ API; lightweight vision detectors use a small task-specific `/v1` API:
 | **NIM** | Docker container (TensorRT-LLM) | NVIDIA-packaged | `nim serve <alias>` |
 | **DSpark cluster** | MiaAI/Anemll vLLM on two GB10 nodes | DeepSeek V4 Flash 0731 | `dspark <action>` |
 | **Qwen Flash Next** | MiaAI SGLang TP2 on two GB10 nodes | Qwen3.8 Flash Next NVFP4 | `qwen38-flash-next <action>` |
-| **GLM Flash** | Dedicated vLLM + Ray TP2 on two GB10 nodes | GLM-5.3 Flash NVFP4 | `glm53-flash <action>` |
+| **GLM Flash** | Dedicated vLLM + MP TP2 on two GB10 nodes | GLM-5.3 Flash EXL3 + DFlash2 | `glm53-flash <action>` |
 | **DSpark One** | MiaAI SparkInfer/EXL3 on one dedicated GB10 | DeepSeek V4 Flash 0731 | `dspark-one <action>` |
 
 An optional streaming router exposes several resident services through one
@@ -401,31 +401,37 @@ python3 -m ml.cli qwen38-flash-next logs-worker
 python3 -m ml.cli qwen38-flash-next stop
 ```
 
-### GLM-5.3 Flash NVFP4 (two linked GB10 systems)
+### GLM-5.3 Flash EXL3 + DFlash2 (two linked GB10 systems)
 
 The GLM path serves
-[`LibertAIDAI/GLM-5.3-Flash-NVFP4`](https://huggingface.co/LibertAIDAI/GLM-5.3-Flash-NVFP4),
-a roughly 181 GiB, multimodal 320B/18B-active MoE. The lifecycle wraps
-[MiaAI-Lab's dual-DGX-Spark recipe](https://github.com/MiaAI-Lab/GLM-5.3-Flash-NVFP4-Dual-DGX-Spark)
-at pinned revision `aed98a13ca75140d2691cc5c651ea5817d9a3e44`, while retaining
-the existing `ml.cli glm53-flash` interface and safety proxy.
+[`brandonmusic/GLM-5.3-Flash-tr3-4bpw`](https://huggingface.co/brandonmusic/GLM-5.3-Flash-tr3-4bpw),
+a roughly 164 GiB EXL3/TR3 quantization of the multimodal 320B/18B-active MoE.
+The lifecycle wraps [MiaAI-Lab's EXL3 dual-DGX-Spark recipe](https://github.com/MiaAI-Lab/GLM-5.3-Flash-EXL3-2x-DGX-Sparks)
+at pinned revision `66e2643d612adb2dced7da230ce52b96fe7f82cc`, and pins the
+measured target snapshot `5ab363a8dcf6405955fd5f99671e01a1c9fb124b`.
 
-MiaAI's image patches the publisher's dedicated arm64/CUDA 13 vLLM build for
-GB10/SM121: capability 12 selects the SM90 NoPE sparse-MLA implementation with
-FlashInfer FA2, PDL is disabled on SM12x, and the sparse indexer/K-pool paths
-receive the validated bounds fixes. The serving layer installs Ray 2.58.0
-without the `cgraph` extra. The pinned vLLM build selects its built-in
-RayExecutorV2 implementation; ml-compute does not force the older
-`VLLM_USE_RAY_V2_EXECUTOR_BACKEND` environment override.
+This replaces the previous NVFP4/Ray profile. It removes Ray and its object
+stores, joins one vLLM multiprocessing rank per Spark directly at TP=2, uses
+the fused EXL3 MoE path and CUDA graphs, and raises the reviewed request ceiling
+from 256K to 900K. The measured default adds
+[`incoai/GLM-5.3-Flash-DFlash2`](https://huggingface.co/incoai/GLM-5.3-Flash-DFlash2)
+with seven speculative tokens and a rank-0-only draft. The conservative launch
+shape remains four sequences, 1K prefill chunks, 0.87 memory utilization, FP8
+MLA KV, prefix caching, and skipped maximum-size multimodal dummy profiling.
 
-The checked-in profile follows MiaAI's measured values: a 4 GiB Ray object
-store per UMA node, 0.84 GPU-memory utilization, 256K context, eight sequences,
-a fixed 4 GiB FP8-E4M3 KV pool per rank, block size 2304, Marlin MoE, eager execution, and skipped
-multimodal dummy profiling. It preserves `glm47` tools, `glm45` reasoning, and
-image/video input. Multi-step MTP is disabled in the stable profile because a
-successful first generation was followed by the rank-0 worker exiting. Cold
-launch still requires at least 112 GiB `MemAvailable` on each Spark. Startup
-performs a completion and watches EngineCore afterward before reporting ready.
+The runtime image is pulled by immutable GHCR digest and shipped to the worker.
+The adapter runs MiaAI's GPU self-check on both Sparks, uses the upstream worker-
+first lifecycle, and patches the materialized launcher so raw unauthenticated
+vLLM binds only to `127.0.0.1:8888`. Only the existing authenticated allow-list
+proxy binds `0.0.0.0:8000`. Tools (`glm47`), reasoning (`glm45`), image, and
+video support remain enabled. Cold launch still requires 112 GiB `MemAvailable`
+on each Spark, and startup performs a completion plus a 20-second EngineCore
+watch before reporting ready.
+
+License note: the EXL3 target uses the source-available ShapleyMCG License 1.0,
+and DFlash2 is CC BY-NC-ND 4.0. Review both before deployment. For commercial
+service without separate DFlash2 permission, set `SPEC_METHOD=mtp`; the
+lifecycle then skips downloading and mounting DFlash2 and uses two-token MTP.
 
 Run on the head Spark:
 
@@ -444,16 +450,17 @@ Or perform the complete initial staging and launch:
 scripts/start-GLM53-Flash-Dual-DSpark.sh --first-run
 ```
 
-The upstream revision, model/image pins, RoCE addresses, Ray settings, and
-memory guards are in
+The upstream revision, target/draft/image pins, RoCE addresses, MP settings,
+and memory guards are in
 [`config/dspark-glm53-flash-nvfp4.env`](config/dspark-glm53-flash-nvfp4.env).
+The legacy profile filename is retained intentionally for existing automation.
 At launch, the adapter resolves the actual netdev and RDMA HCA owning each
 configured RoCE IP, so the two Sparks do not need identical interface names.
 The lifecycle implementation is
 [`scripts/GLM53-Flash-Dual-DSpark.sh`](scripts/GLM53-Flash-Dual-DSpark.sh).
-The upstream checkout and generated images live under ignored `data/dspark/`.
-The pinned snapshot is reused from the existing cache and rsynced only when
-needed; allow at least 240 GiB of free disk on both systems.
+The upstream checkout and caches remain under ignored `data/dspark/glm53-flash/`.
+Pinned snapshots are reused and rsynced only when needed; allow at least 220 GiB
+of free disk on both systems.
 
 Like the other cluster recipes, raw vLLM binds only to `127.0.0.1:8888` and
 the authenticated allow-list proxy owns public port 8000. Stop Qwen or
@@ -529,7 +536,7 @@ python3 -m ml.cli vision stop                 # Transformers vision lifecycle
 python3 -m ml.cli nim stop                    # NIM has its own lifecycle
 python3 -m ml.cli dspark stop                 # stops both cluster nodes
 python3 -m ml.cli qwen38-flash-next stop      # stops Qwen on both cluster nodes
-python3 -m ml.cli glm53-flash stop            # stops GLM Ray/vLLM on both nodes
+python3 -m ml.cli glm53-flash stop            # stops GLM MP/vLLM on both nodes
 python3 -m ml.cli dspark-one stop             # stops the independent one-Spark service
 ```
 
@@ -576,7 +583,7 @@ No code changes — register a model with provider `openai`, the base URL above,
 | Want NVIDIA-tuned TensorRT-LLM kernels and NVFP4 on Blackwell | **NIM** |
 | DeepSeek V4 Flash 0731 across two linked GB10 nodes | **DSpark cluster** |
 | Qwen3.8 Flash Next NVFP4 at 1M across two linked GB10 nodes | **Qwen Flash Next** |
-| Experimental GLM-5.3 Flash NVFP4 at 32K across two linked GB10 nodes | **GLM Flash** |
+| GLM-5.3 Flash EXL3 + DFlash2 at 900K across two linked GB10 nodes | **GLM Flash** |
 | DeepSeek V4 Flash 0731 on one dedicated GB10 at 384K | **DSpark One** |
 | Fine-tuning | none — stop the server, run `Makefile.gb10` |
 
@@ -617,7 +624,7 @@ tuning. A representative slice of what's registered:
 | `gemma4-31b-it-fp8` | 31B via runtime FP8 quant — GB10-sized |
 | `qwen2.5-coder-32b` (llama.cpp) | Q8_0 GGUF with `--jinja` — real tool calling for agentic coders |
 | `qwen3.8-flash-next-nvfp4-dspark` | Dual-Spark SGLang TP2, SM121 QSA + NVFP4-KV patch, 1M YaRN profile |
-| `glm-5.3-flash-nvfp4-dspark` | Experimental dual-Spark Ray TP2, Marlin/eager, 32K profile |
+| `glm-5.3-flash-nvfp4-dspark` | Legacy key for dual-Spark EXL3/MP TP2 + DFlash2, 900K profile |
 | `deepseek-v4-flash-0731-dspark-one` | One-Spark TP=1 EXL3 recipe, 384K single-request profile |
 
 Adding an entry:
@@ -1036,7 +1043,7 @@ ml-compute/
 ├── config/
 │   ├── dspark-spark4e89-thinkstationpgx.env   dual-Spark DeepSeek profile
 │   ├── dspark-qwen38-flash-next-nvfp4.env     dual-Spark Qwen 1M NVFP4-KV profile
-│   ├── dspark-glm53-flash-nvfp4.env            dual-Spark GLM 32K profile
+│   ├── dspark-glm53-flash-nvfp4.env            dual-Spark GLM EXL3 900K profile (legacy name)
 │   └── dspark-one-deepseek-v4-flash-0731.env  one-Spark 384K profile
 ├── Makefile.gb10               LoRA fine-tuning on DGX Spark (bf16, HF+PEFT+TRL)
 ├── Makefile.distill            Distillation data pipeline (+ x86 QLoRA train)
@@ -1045,7 +1052,7 @@ ml-compute/
 │   ├── DS4-Flash-DSpark.sh         dual-Spark DeepSeek lifecycle
 │   ├── Qwen38-Flash-Next-Dual-DSpark.sh dual-Spark Qwen lifecycle
 │   ├── start-Qwen38-Flash-Next-Dual-DSpark.sh Qwen first-run/start wrapper
-│   ├── GLM53-Flash-Dual-DSpark.sh  dual-Spark GLM Ray/vLLM lifecycle
+│   ├── GLM53-Flash-Dual-DSpark.sh  dual-Spark GLM MP/vLLM lifecycle
 │   ├── start-GLM53-Flash-Dual-DSpark.sh GLM first-run/start wrapper
 │   ├── DS4-Flash-One-DSpark.sh     one-Spark lifecycle + safety checks
 │   ├── start-DS4-Flash-One-DSpark.sh first-run / normal-start wrapper

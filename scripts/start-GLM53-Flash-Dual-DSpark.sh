@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Start GLM-5.3 Flash NVFP4 on the configured two-DGX-Spark cluster.
-# Pass --first-run to pin MiaAI, build, download, mirror, GPU-check, and start.
+# Start GLM-5.3 Flash EXL3 + DFlash2 on the configured dual-Spark cluster.
+# Pass --first-run to pin MiaAI, pull, download, mirror, GPU-check, and start.
 
 if [ -z "${BASH_VERSION:-}" ]; then
   exec bash "$0" "$@"
@@ -35,12 +35,12 @@ case "${1:-}" in
 Usage: scripts/start-GLM53-Flash-Dual-DSpark.sh [--first-run]
 
 With no argument, validate the checked-in profile, run MiaAI-Lab's pinned
-two-node Ray/vLLM lifecycle, and start the authenticated proxy on 8000.
---first-run also clones the pinned upstream recipe, builds and ships its
-SM121/NoPE kernel image, and downloads/verifies/rsyncs the ~181 GiB snapshot.
+two-node MP/vLLM lifecycle, and start the authenticated proxy on 8000.
+--first-run also clones the pinned upstream recipe, pulls and ships its
+digest-pinned image, and downloads/verifies/rsyncs the ~164 GiB target.
 
-The reviewed profile uses Ray 2.58 with 4 GiB object stores, Marlin + eager,
-FP8 KV, 256K context, and disabled MM dummy profiling during initialization.
+The reviewed profile uses EXL3 fused MoE, DFlash2 k=7, CUDA graphs, FP8 KV,
+900K context, and disabled MM dummy profiling during initialization.
 EOF
     exit 0
     ;;

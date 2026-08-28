@@ -1,11 +1,13 @@
 #!/usr/bin/env bash
-# GLM-5.3 Flash NVFP4 on two linked DGX Sparks (GB10 / SM121).
+# GLM-5.3 Flash EXL3 + DFlash2 on two linked DGX Sparks (GB10 / SM121).
 #
-# Lifecycle adapter for MiaAI-Lab's validated vLLM/Ray TP=2 recipe:
-# https://github.com/MiaAI-Lab/GLM-5.3-Flash-NVFP4-Dual-DGX-Spark
-# The upstream checkout, model revision, and publisher base image are pinned.
-# Generated images, compile caches, and the ~181 GiB checkpoint stay below the
-# ignored data tree; ml-compute keeps ownership of configuration and exposure.
+# Lifecycle adapter for MiaAI-Lab's validated vLLM/MP TP=2 recipe:
+# https://github.com/MiaAI-Lab/GLM-5.3-Flash-EXL3-2x-DGX-Sparks
+#
+# The public ml-compute contract intentionally remains stable: the
+# `glm53-flash` CLI, this script path, the legacy-named profile, the
+# data/dspark/glm53-flash runtime tree, and the authenticated proxy are kept.
+# Only the serving backend changes from NVFP4/Ray to EXL3/MP/DFlash2.
 
 if [ -z "${BASH_VERSION:-}" ]; then
   exec bash "$0" "$@"
@@ -16,17 +18,18 @@ set -Eeuo pipefail
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PROFILE_FILE_DEFAULT="${PROJECT_ROOT}/config/dspark-glm53-flash-nvfp4.env"
 RUNTIME_DIR_DEFAULT="${PROJECT_ROOT}/data/dspark/glm53-flash"
-RECIPE_DIR_DEFAULT="${RUNTIME_DIR_DEFAULT}/miaai-dual-spark"
+RECIPE_DIR_DEFAULT="${RUNTIME_DIR_DEFAULT}/miaai-exl3-dual-spark"
 PROJECT_ENV_FILE_DEFAULT="${PROJECT_ROOT}/.env.local"
 
-UPSTREAM_REPO_DEFAULT="https://github.com/MiaAI-Lab/GLM-5.3-Flash-NVFP4-Dual-DGX-Spark.git"
-UPSTREAM_REVISION_DEFAULT="aed98a13ca75140d2691cc5c651ea5817d9a3e44"
-MODEL_ID_DEFAULT="LibertAIDAI/GLM-5.3-Flash-NVFP4"
-MODEL_REVISION_DEFAULT="11d73216cd636238e82e1d77fe1042ffab36e7fa"
+UPSTREAM_REPO_DEFAULT="https://github.com/MiaAI-Lab/GLM-5.3-Flash-EXL3-2x-DGX-Sparks.git"
+UPSTREAM_REVISION_DEFAULT="66e2643d612adb2dced7da230ce52b96fe7f82cc"
+MODEL_ID_DEFAULT="brandonmusic/GLM-5.3-Flash-tr3-4bpw"
+MODEL_REVISION_DEFAULT="5ab363a8dcf6405955fd5f99671e01a1c9fb124b"
+DFLASH_MODEL_ID_DEFAULT="incoai/GLM-5.3-Flash-DFlash2"
+DFLASH_MODEL_REVISION_DEFAULT="7d74cdd881ed7e32c31175984a67823127b66cfe"
 VLLM_BASE_IMAGE_DEFAULT="vllm/vllm-openai:glm53-flash-arm64-cu130@sha256:905c02933be6021301db2dc284e24e3727467aa3a0f63b41d609885778a07bce"
-KERNEL_IMAGE_DEFAULT="ml-compute/glm53-flash-sm121-kernel:v8-aed98a1"
-VLLM_IMAGE_DEFAULT="ml-compute/glm53-flash-sm121:mm-ray-v1-aed98a1"
-RAY_VERSION_DEFAULT="2.58.0"
+VLLM_SOURCE_IMAGE_DEFAULT="ghcr.io/miaai-lab/glm-5.3-flash-2x-dgx-sparks@sha256:9bb1557a4234fce63d59599e44d10747eabd742beb337eebf9e7070be8a0fd58"
+VLLM_IMAGE_DEFAULT="ml-compute/glm53-flash-exl3:mp-dflash2-v1-66e2643"
 
 PROFILE_FILE="${GLM53_DSPARK_CONFIG_FILE:-${PROFILE_FILE_DEFAULT}}"
 RUNTIME_DIR="${GLM53_DSPARK_RUNTIME_DIR:-${RUNTIME_DIR_DEFAULT}}"
@@ -35,6 +38,7 @@ PROJECT_ENV_FILE="${GLM53_DSPARK_PROJECT_ENV_FILE:-${PROJECT_ENV_FILE_DEFAULT}}"
 UPSTREAM_REPO="${GLM53_DSPARK_UPSTREAM_REPO:-${UPSTREAM_REPO_DEFAULT}}"
 UPSTREAM_REVISION="${GLM53_DSPARK_UPSTREAM_REVISION:-${UPSTREAM_REVISION_DEFAULT}}"
 RESOLVED_ENV="${RUNTIME_DIR}/.env.glm53"
+UPSTREAM_ENV="${RECIPE_DIR}/.env"
 
 log() { printf '[glm53-flash] %s\n' "$*"; }
 warn() { printf '[glm53-flash] WARNING: %s\n' "$*" >&2; }
@@ -42,7 +46,7 @@ die() { printf '[glm53-flash] ERROR: %s\n' "$*" >&2; exit 1; }
 
 usage() {
   cat <<'EOF'
-GLM-5.3 Flash NVFP4 — MiaAI dual-DGX-Spark vLLM/Ray lifecycle
+GLM-5.3 Flash EXL3 + DFlash2 — MiaAI dual-DGX-Spark vLLM/MP lifecycle
 
 Run on the head/rank-0 Spark:
 
@@ -55,35 +59,35 @@ Run on the head/rank-0 Spark:
 Actions:
   bootstrap    Clone and detach the reviewed MiaAI-Lab upstream revision
   configure    Validate and materialize the resolved ml-compute profile
-  check        Validate the pin, both GB10 nodes, memory, disk, and API key
+  check        Validate pins, both GB10 nodes, memory, disk, and API key
   setup        Run bootstrap, configure, and check
-  pull         Build MiaAI's pinned SM121 kernel/serving image and ship it
-  download     Download the pinned ~181 GiB snapshot and rsync it to the worker
-  gpu-check    Verify CUDA, Ray 2.58, and the SM121/NoPE patch on both nodes
-  start        Run MiaAI's worker-first TP=2 launch, then the safety proxy
-  status       Show both containers, Ray status, raw API, and proxy state
-  diagnose     Print the head log and relevant head/worker Ray logs
+  pull         Pull the digest-pinned EXL3 image and ship its local tag
+  download     Download pinned EXL3 + DFlash2 snapshots and mirror them
+  gpu-check    Run MiaAI's EXL3/SM121/DFlash2 GPU self-check on both nodes
+  start        Run worker-first MP TP=2, then the authenticated safety proxy
+  status       Show both containers, raw API, and proxy state
+  diagnose     Print head and worker container diagnostics
   memory       Show shared-memory and GPU use on both nodes
   smoke        Verify proxy safety and perform one GLM completion
-  logs         Follow MiaAI's head container log
-  logs-worker  Follow MiaAI's worker container log
+  logs         Follow the head container log
+  logs-worker  Follow the worker container log
   stop         Stop the proxy and both containers; preserve caches
   update       Fetch and re-checkout the revision pinned by this script
   all          Run setup, download, pull, gpu-check, and start
-  path         Print checkout, profile, cache, image, and revision paths
+  path         Print checkout, profile, cache, images, and revisions
   help         Show this help
 
 Reviewed MiaAI profile:
-  - patched SM121 image: SM90 NoPE sparse MLA + FlashInfer FA2
-  - Ray 2.58.0 default executor with a 4 GiB object store per UMA node
-  - 256K context, 8 sequences, FP8 KV, block size 2304
-  - Marlin MoE + eager execution and MM profiling disabled during boot
-  - glm47 tools and glm45 reasoning; unstable multi-step MTP disabled
+  - fused EXL3/TR3 K4 routed experts with native SM121 cubins
+  - direct vLLM multiprocessing executor, two nodes, TP=2
+  - DFlash2 k=7 on draft TP=1; MTP k=2 remains the rollback mode
+  - 900K context, 4 sequences, 1024-token prefill chunks, FP8 MLA KV
+  - CUDA graphs, prefix caching, image/video, glm47 tools, glm45 reasoning
   - raw unauthenticated API on 127.0.0.1:8888 only
   - authenticated allow-list proxy on 0.0.0.0:8000
 
-The pinned vLLM build selects its built-in Ray executor. ml-compute does not
-force the legacy VLLM_USE_RAY_V2_EXECUTOR_BACKEND environment override.
+The DFlash2 checkpoint is CC BY-NC-ND 4.0. For a commercial deployment,
+review its license and use SPEC_METHOD=mtp unless separate permission exists.
 EOF
 }
 
@@ -125,7 +129,7 @@ WORKER_CX7_IB|rocep1s0f0
 WORKER_USER|
 WORKER_HOST|spark2
 WORKER_SSH|
-RAY_HEAD_PORT|6379
+MASTER_PORT|29521
 GLM53_HEAD_CONTAINER|glm53-flash-head
 GLM53_WORKER_CONTAINER|glm53-flash-worker
 HOST_BIND|127.0.0.1
@@ -134,24 +138,31 @@ DSPARK_PROXY_HOST|0.0.0.0
 DSPARK_PROXY_PORT|8000
 MODEL_ID|${MODEL_ID_DEFAULT}
 MODEL_REVISION|${MODEL_REVISION_DEFAULT}
-SERVED_MODEL_NAME|${MODEL_ID_DEFAULT}
+DFLASH_MODEL_ID|${DFLASH_MODEL_ID_DEFAULT}
+DFLASH_MODEL_REVISION|${DFLASH_MODEL_REVISION_DEFAULT}
+SERVED_MODEL_NAME|GLM-5.3-Flash-EXL3
 VLLM_BASE_IMAGE|${VLLM_BASE_IMAGE_DEFAULT}
-KERNEL_IMAGE|${KERNEL_IMAGE_DEFAULT}
+VLLM_SOURCE_IMAGE|${VLLM_SOURCE_IMAGE_DEFAULT}
 VLLM_IMAGE|${VLLM_IMAGE_DEFAULT}
-RAY_VERSION|${RAY_VERSION_DEFAULT}
-RAY_OBJECT_STORE_MEMORY|4294967296
 TENSOR_PARALLEL_SIZE|2
-MAX_MODEL_LEN|262144
-MAX_NUM_SEQS|8
-GPU_MEMORY_UTILIZATION|0.84
-BLOCK_SIZE|2304
-KV_CACHE_DTYPE|fp8_e4m3
-KV_CACHE_MEMORY|4294967296
-MOE_BACKEND|marlin
-ENFORCE_EAGER|1
+NUM_NODES|2
+DISTRIBUTED_EXECUTOR_BACKEND|mp
+QUANTIZATION|exl3
+MAX_MODEL_LEN|900000
+MAX_NUM_SEQS|4
+MAX_NUM_BATCHED_TOKENS|1024
+GPU_MEMORY_UTILIZATION|0.87
+KV_CACHE_DTYPE|fp8
+ENFORCE_EAGER|0
+EXL3_FUSED_MOE|1
+ENABLE_PREFIX_CACHING|1
+SPEC_METHOD|dflash
+DFLASH_SPECULATIVE_TOKENS|7
+DFLASH_DRAFT_TP|1
+MTP_SPECULATIVE_TOKENS|2
 TOOL_CALL_PARSER|glm47
 REASONING_PARSER|glm45
-MTP_SPECULATIVE_TOKENS|0
+LANGUAGE_MODEL_ONLY|0
 LIMIT_MM|{"image":4,"video":1}
 SKIP_MM_PROFILING|1
 TORCH_CUDA_ARCH_LIST|12.1a
@@ -160,9 +171,9 @@ HF_HOME|${RUNTIME_DIR}/cache/huggingface
 WORKER_HF_HOME|
 DOWNLOAD_MODE|rsync
 VLLM_ENGINE_READY_TIMEOUT_S|3600
-CLUSTER_WAIT_ITERS|120
-CACHE_VOLUME|glm53-flash-cache-sm121
-USE_HOST_NCCL|1
+CACHE_ROOT|${RUNTIME_DIR}/cache/vllm
+WORKER_VLLM_CACHE|
+USE_HOST_NCCL|0
 NCCL_HOST_DIR|
 WORKER_NCCL_HOST_DIR|
 NCCL_SO_NAME|libnccl.so.2.30.7
@@ -171,15 +182,16 @@ NCCL_IB_GID_INDEX|3
 NCCL_CROSS_NIC|0
 EXTRA_ARGS|
 GLM53_MIN_AVAILABLE_GIB|112
-GLM53_MIN_DISK_GIB|240
+GLM53_MIN_DISK_GIB|220
 EOF
 
-  # MiaAI's launcher runs from RECIPE_DIR. Resolve a user-supplied relative
-  # HF_HOME against the ml-compute root before that directory change so the
-  # cache verified here is the same cache mounted by the upstream launcher.
   if [[ "${HF_HOME}" != /* ]]; then
     HF_HOME="${PROJECT_ROOT}/${HF_HOME#./}"
     export HF_HOME
+  fi
+  if [[ "${CACHE_ROOT}" != /* ]]; then
+    CACHE_ROOT="${PROJECT_ROOT}/${CACHE_ROOT#./}"
+    export CACHE_ROOT
   fi
 }
 
@@ -194,7 +206,7 @@ WORKER_CX7_IB
 WORKER_USER
 WORKER_HOST
 WORKER_SSH
-RAY_HEAD_PORT
+MASTER_PORT
 GLM53_HEAD_CONTAINER
 GLM53_WORKER_CONTAINER
 HOST_BIND
@@ -203,24 +215,31 @@ DSPARK_PROXY_HOST
 DSPARK_PROXY_PORT
 MODEL_ID
 MODEL_REVISION
+DFLASH_MODEL_ID
+DFLASH_MODEL_REVISION
 SERVED_MODEL_NAME
 VLLM_BASE_IMAGE
-KERNEL_IMAGE
+VLLM_SOURCE_IMAGE
 VLLM_IMAGE
-RAY_VERSION
-RAY_OBJECT_STORE_MEMORY
 TENSOR_PARALLEL_SIZE
+NUM_NODES
+DISTRIBUTED_EXECUTOR_BACKEND
+QUANTIZATION
 MAX_MODEL_LEN
 MAX_NUM_SEQS
+MAX_NUM_BATCHED_TOKENS
 GPU_MEMORY_UTILIZATION
-BLOCK_SIZE
 KV_CACHE_DTYPE
-KV_CACHE_MEMORY
-MOE_BACKEND
 ENFORCE_EAGER
+EXL3_FUSED_MOE
+ENABLE_PREFIX_CACHING
+SPEC_METHOD
+DFLASH_SPECULATIVE_TOKENS
+DFLASH_DRAFT_TP
+MTP_SPECULATIVE_TOKENS
 TOOL_CALL_PARSER
 REASONING_PARSER
-MTP_SPECULATIVE_TOKENS
+LANGUAGE_MODEL_ONLY
 LIMIT_MM
 SKIP_MM_PROFILING
 TORCH_CUDA_ARCH_LIST
@@ -229,8 +248,8 @@ HF_HOME
 WORKER_HF_HOME
 DOWNLOAD_MODE
 VLLM_ENGINE_READY_TIMEOUT_S
-CLUSTER_WAIT_ITERS
-CACHE_VOLUME
+CACHE_ROOT
+WORKER_VLLM_CACHE
 USE_HOST_NCCL
 NCCL_HOST_DIR
 WORKER_NCCL_HOST_DIR
@@ -248,57 +267,76 @@ validate_profile() {
   load_profile
   [[ "${HOST_BIND}" == "127.0.0.1" ]] \
     || die "HOST_BIND must be 127.0.0.1; expose only the authenticated safety proxy"
-  [[ "${TENSOR_PARALLEL_SIZE}" == "2" ]] \
-    || die "MiaAI's reviewed lifecycle is specifically two Sparks and TP=2"
-  (( MAX_MODEL_LEN <= 262144 )) \
-    || die "MAX_MODEL_LEN above MiaAI's reviewed 262144-token profile is not enabled"
-  (( MAX_NUM_SEQS <= 8 )) \
-    || die "MAX_NUM_SEQS above MiaAI's reviewed value 8 is not enabled"
-  awk -v value="${GPU_MEMORY_UTILIZATION}" 'BEGIN {exit !(value <= 0.84)}' \
-    || die "GPU_MEMORY_UTILIZATION above 0.84 can exhaust GB10 UMA during MM warmup"
-  [[ "${BLOCK_SIZE}" == "2304" ]] \
-    || die "BLOCK_SIZE must remain 2304 for MiaAI's DeepGEMM paged-MQA profile"
-  [[ "${KV_CACHE_DTYPE}" == "fp8_e4m3" ]] \
-    || die "KV_CACHE_DTYPE must remain fp8_e4m3 for the reviewed memory profile"
-  [[ "${KV_CACHE_MEMORY}" == "4294967296" ]] \
-    || die "KV_CACHE_MEMORY must remain pinned to 4 GiB on both UMA ranks"
-  [[ "${MOE_BACKEND}" == "marlin" ]] \
-    || die "MOE_BACKEND must remain marlin on GB10/SM121"
-  [[ "${ENFORCE_EAGER}" == "1" ]] \
-    || die "ENFORCE_EAGER must remain enabled on GB10 UMA"
+  [[ "${TENSOR_PARALLEL_SIZE}" == "2" && "${NUM_NODES}" == "2" ]] \
+    || die "The reviewed MiaAI lifecycle is exactly two Sparks with TP=2"
+  [[ "${DISTRIBUTED_EXECUTOR_BACKEND}" == "mp" ]] \
+    || die "DISTRIBUTED_EXECUTOR_BACKEND must remain mp"
+  [[ "${QUANTIZATION}" == "exl3" ]] \
+    || die "QUANTIZATION must remain exl3 for the packed TR3 checkpoint"
+  (( MAX_MODEL_LEN > 0 && MAX_MODEL_LEN <= 900000 )) \
+    || die "MAX_MODEL_LEN must be between 1 and MiaAI's reviewed 900000"
+  (( MAX_NUM_SEQS > 0 && MAX_NUM_SEQS <= 4 )) \
+    || die "MAX_NUM_SEQS must be between 1 and MiaAI's reviewed value 4"
+  (( MAX_NUM_BATCHED_TOKENS > 0 && MAX_NUM_BATCHED_TOKENS <= 1024 )) \
+    || die "MAX_NUM_BATCHED_TOKENS above 1024 can exhaust the GB10 indexer on long prefill"
+  awk -v value="${GPU_MEMORY_UTILIZATION}" 'BEGIN {exit !(value > 0 && value <= 0.87)}' \
+    || die "GPU_MEMORY_UTILIZATION must not exceed MiaAI's reviewed 0.87"
+  [[ "${KV_CACHE_DTYPE}" == "fp8" ]] \
+    || die "KV_CACHE_DTYPE must remain fp8 for packed fp8_ds_mla"
+  [[ "${ENFORCE_EAGER}" == "0" ]] \
+    || die "ENFORCE_EAGER must remain 0 so the reviewed CUDA graph path is used"
+  [[ "${EXL3_FUSED_MOE}" == "1" ]] \
+    || die "EXL3_FUSED_MOE must remain enabled for the reviewed decode path"
+  [[ "${ENABLE_PREFIX_CACHING}" == "1" ]] \
+    || die "ENABLE_PREFIX_CACHING must remain enabled"
+  [[ "${TOOL_CALL_PARSER}" == "glm47" && "${REASONING_PARSER}" == "glm45" ]] \
+    || die "The pinned launcher requires glm47 tools and glm45 reasoning"
+  [[ "${SPEC_METHOD}" == "dflash" || "${SPEC_METHOD}" == "mtp" || "${SPEC_METHOD}" == "none" ]] \
+    || die "SPEC_METHOD must be dflash, mtp, or none"
+  if [[ "${SPEC_METHOD}" == "dflash" ]]; then
+    [[ "${DFLASH_SPECULATIVE_TOKENS}" == "7" ]] \
+      || die "DFlash2 is trained for block size 8 and requires exactly 7 draft tokens"
+    [[ "${DFLASH_DRAFT_TP}" == "1" ]] \
+      || die "DFLASH_DRAFT_TP must remain 1 to avoid CX7 traffic on each draft step"
+  fi
+  (( MTP_SPECULATIVE_TOKENS >= 0 && MTP_SPECULATIVE_TOKENS <= 2 )) \
+    || die "MTP_SPECULATIVE_TOKENS must be between 0 and MiaAI's rollback value 2"
   [[ "${SKIP_MM_PROFILING}" == "1" ]] \
-    || die "SKIP_MM_PROFILING must remain enabled; the max-size MM dummy forward OOMs UMA"
+    || die "SKIP_MM_PROFILING must remain enabled; the maximum MM dummy profile OOMs UMA"
+  [[ "${LANGUAGE_MODEL_ONLY}" == "0" || "${LANGUAGE_MODEL_ONLY}" == "1" ]] \
+    || die "LANGUAGE_MODEL_ONLY must be 0 or 1"
   [[ "${LIMIT_MM}" == '{"image":4,"video":1}' ]] \
     || die 'LIMIT_MM must remain valid JSON: {"image":4,"video":1}'
-  (( MTP_SPECULATIVE_TOKENS >= 0 && MTP_SPECULATIVE_TOKENS <= 4 )) \
-    || die "MTP_SPECULATIVE_TOKENS must be between 0 and MiaAI's reviewed value 4"
-  [[ "${RAY_VERSION}" == "${RAY_VERSION_DEFAULT}" ]] \
-    || die "RAY_VERSION must remain ${RAY_VERSION_DEFAULT} for the pinned MiaAI recipe"
-  (( RAY_OBJECT_STORE_MEMORY <= 4294967296 )) \
-    || die "Ray object store above 4 GiB steals memory from the GB10 GPU budget"
-  [[ "${MODEL_ID}" == "${MODEL_ID_DEFAULT}" ]] \
-    || die "MODEL_ID must remain ${MODEL_ID_DEFAULT}"
-  [[ "${MODEL_REVISION}" == "${MODEL_REVISION_DEFAULT}" ]] \
-    || die "MODEL_REVISION must remain the reviewed checkpoint pin"
-  [[ "${SERVED_MODEL_NAME}" == "${MODEL_ID_DEFAULT}" ]] \
-    || die "SERVED_MODEL_NAME must match MiaAI's public model name ${MODEL_ID_DEFAULT}"
+  [[ "${MODEL_ID}" == "${MODEL_ID_DEFAULT}" && "${MODEL_REVISION}" == "${MODEL_REVISION_DEFAULT}" ]] \
+    || die "MODEL_ID and MODEL_REVISION must remain on the measured EXL3 snapshot"
+  [[ "${DFLASH_MODEL_ID}" == "${DFLASH_MODEL_ID_DEFAULT}" \
+    && "${DFLASH_MODEL_REVISION}" == "${DFLASH_MODEL_REVISION_DEFAULT}" ]] \
+    || die "DFlash2 model and revision must remain pinned"
+  [[ "${SERVED_MODEL_NAME}" == "GLM-5.3-Flash-EXL3" ]] \
+    || die "SERVED_MODEL_NAME must remain GLM-5.3-Flash-EXL3"
   [[ "${VLLM_BASE_IMAGE}" == "${VLLM_BASE_IMAGE_DEFAULT}" ]] \
     || die "VLLM_BASE_IMAGE must remain the reviewed publisher manifest"
-  [[ "${KERNEL_IMAGE}" == "${KERNEL_IMAGE_DEFAULT}" ]] \
-    || warn "KERNEL_IMAGE differs from the revision-keyed local tag"
+  [[ "${VLLM_SOURCE_IMAGE}" == "${VLLM_SOURCE_IMAGE_DEFAULT}" ]] \
+    || die "VLLM_SOURCE_IMAGE must remain digest-pinned"
   [[ "${VLLM_IMAGE}" == "${VLLM_IMAGE_DEFAULT}" ]] \
     || warn "VLLM_IMAGE differs from the revision-keyed local tag"
   [[ "${GLM53_HEAD_CONTAINER}" == "glm53-flash-head" \
     && "${GLM53_WORKER_CONTAINER}" == "glm53-flash-worker" ]] \
-    || die "Container names must match the pinned upstream lifecycle"
-  [[ "${USE_HOST_NCCL}" == "0" || "${USE_HOST_NCCL}" == "1" ]] \
-    || die "USE_HOST_NCCL must be 0 or 1"
+    || die "Container names must preserve the ml-compute dual-Spark lifecycle"
+  [[ "${USE_HOST_NCCL}" == "0" ]] \
+    || die "USE_HOST_NCCL must remain 0; a second NCCL preload conflicts with this image"
   [[ " ${EXTRA_ARGS} " != *" --host "* && " ${EXTRA_ARGS} " != *" --host="* ]] \
     || die "EXTRA_ARGS may not override the private raw host"
   [[ " ${EXTRA_ARGS} " != *" --port "* && " ${EXTRA_ARGS} " != *" --port="* ]] \
     || die "EXTRA_ARGS may not override the private raw port"
-  [[ "${EXTRA_ARGS}" != *"VLLM_USE_RAY_V2_EXECUTOR_BACKEND"* ]] \
-    || die "RayExecutorV2 is not used by the validated MiaAI strategy"
+  [[ "${EXTRA_ARGS}" != *"--quantization"* ]] \
+    || die "EXTRA_ARGS may not override EXL3 quantization"
+}
+
+warn_dflash_license() {
+  if [[ "${SPEC_METHOD}" == "dflash" ]]; then
+    warn "DFlash2 is CC BY-NC-ND 4.0; use SPEC_METHOD=mtp for commercial service without separate permission"
+  fi
 }
 
 recipe_head() {
@@ -324,7 +362,7 @@ sync_recipe_pin() {
     git -C "${RECIPE_DIR}" fetch --no-tags origin "${UPSTREAM_REVISION}"
   fi
   git -C "${RECIPE_DIR}" checkout --detach "${UPSTREAM_REVISION}"
-  log "Pinned MiaAI upstream revision: ${UPSTREAM_REVISION}"
+  log "Pinned MiaAI EXL3 upstream revision: ${UPSTREAM_REVISION}"
 }
 
 bootstrap() {
@@ -338,24 +376,6 @@ bootstrap() {
   mkdir -p "$(dirname "${RECIPE_DIR}")"
   git clone --no-tags "${UPSTREAM_REPO}" "${RECIPE_DIR}"
   sync_recipe_pin
-}
-
-configure() {
-  check_recipe_pin
-  validate_profile
-  mkdir -p "${RUNTIME_DIR}" "${RUNTIME_DIR}/logs" "${HF_HOME}"
-  local env_tmp key
-  env_tmp="$(mktemp "${RUNTIME_DIR}/.env.glm53.XXXXXX")"
-  {
-    printf '# Generated by ml-compute; edit %s instead.\n' "${PROFILE_FILE}"
-    printf 'UPSTREAM_REVISION=%s\n' "${UPSTREAM_REVISION}"
-    while IFS= read -r key; do
-      [[ -n "${key}" ]] || continue
-      printf '%s=%s\n' "${key}" "${!key}"
-    done < <(resolved_keys)
-  } >"${env_tmp}"
-  mv "${env_tmp}" "${RESOLVED_ENV}"
-  log "Validated and materialized profile at ${RESOLVED_ENV}"
 }
 
 project_env_value() {
@@ -449,17 +469,13 @@ resolve_cluster_interfaces() {
   local head_netdev worker_netdev head_hca worker_hca
   head_netdev="$(local_netdev_for_ip "${HEAD_CX7_IP}")"
   worker_netdev="$(worker_netdev_for_ip "${WORKER_CX7_IP}")"
-  [[ -n "${head_netdev}" ]] \
-    || die "No head interface owns configured address ${HEAD_CX7_IP}"
-  [[ -n "${worker_netdev}" ]] \
-    || die "No worker interface owns configured address ${WORKER_CX7_IP}"
+  [[ -n "${head_netdev}" ]] || die "No head interface owns ${HEAD_CX7_IP}"
+  [[ -n "${worker_netdev}" ]] || die "No worker interface owns ${WORKER_CX7_IP}"
 
   head_hca="$(local_hca_for_netdev "${head_netdev}")"
   worker_hca="$(worker_hca_for_netdev "${worker_netdev}")"
-  [[ -n "${head_hca}" ]] \
-    || die "No head RDMA HCA maps to ${head_netdev} (${HEAD_CX7_IP})"
-  [[ -n "${worker_hca}" ]] \
-    || die "No worker RDMA HCA maps to ${worker_netdev} (${WORKER_CX7_IP})"
+  [[ -n "${head_hca}" ]] || die "No head RDMA HCA maps to ${head_netdev}"
+  [[ -n "${worker_hca}" ]] || die "No worker RDMA HCA maps to ${worker_netdev}"
 
   if [[ "${HEAD_CX7_IF}" != "${head_netdev}" || "${HEAD_CX7_IB}" != "${head_hca}" ]]; then
     warn "Head RoCE mapping detected as ${head_netdev}/${head_hca}; profile had ${HEAD_CX7_IF}/${HEAD_CX7_IB}"
@@ -497,51 +513,79 @@ worker_home() {
   fi
 }
 
+worker_vllm_cache() {
+  if [[ -n "${WORKER_VLLM_CACHE}" ]]; then
+    printf '%s' "${WORKER_VLLM_CACHE}"
+  else
+    printf '%s/.cache/vllm-glm53-flash' "$(worker_home)"
+  fi
+}
+
 model_cache_name() {
-  printf 'models--%s' "${MODEL_ID//\//--}"
+  local repo_id="$1"
+  printf 'models--%s' "${repo_id//\//--}"
 }
 
 snapshot_path() {
-  printf '%s/hub/%s/snapshots/%s' "${HF_HOME}" "$(model_cache_name)" "${MODEL_REVISION}"
+  local repo_id="$1" revision="$2"
+  printf '%s/hub/%s/snapshots/%s' "${HF_HOME}" "$(model_cache_name "${repo_id}")" "${revision}"
 }
 
 worker_snapshot_path() {
-  printf '%s/hub/%s/snapshots/%s' "$(worker_hf_home)" "$(model_cache_name)" "${MODEL_REVISION}"
+  local repo_id="$1" revision="$2"
+  printf '%s/hub/%s/snapshots/%s' "$(worker_hf_home)" "$(model_cache_name "${repo_id}")" "${revision}"
 }
 
-verify_snapshot() {
+verify_target_snapshot() {
   local snapshot="$1" label="$2" count
-  [[ -f "${snapshot}/config.json" ]] || die "${label}: missing config.json in pinned snapshot"
-  [[ -f "${snapshot}/processor_config.json" ]] \
-    || die "${label}: missing processor_config.json in pinned snapshot"
-  [[ -f "${snapshot}/model.safetensors.index.json" ]] \
-    || die "${label}: missing model.safetensors.index.json"
-  [[ -f "${snapshot}/chat_template.jinja" ]] \
-    || die "${label}: missing chat_template.jinja"
+  [[ -f "${snapshot}/config.json" ]] || die "${label}: missing config.json"
+  [[ -f "${snapshot}/model.safetensors.index.json" ]] || die "${label}: missing model index"
   count="$(find -L "${snapshot}" -maxdepth 1 -type f -name '*.safetensors' | wc -l | tr -d ' ')"
-  (( count >= 120 )) || die "${label}: only ${count}/120 safetensor shards are present"
-  log "${label}: pinned snapshot verified (${count} shards)"
+  (( count >= 120 )) || die "${label}: only ${count}/120 target shards are present"
+  log "${label}: EXL3 snapshot verified (${count} shards)"
 }
 
-verify_worker_snapshot() {
-  local snapshot count
-  snapshot="$(worker_snapshot_path)"
-  wrun "test -f '${snapshot}/config.json' && test -f '${snapshot}/processor_config.json' && test -f '${snapshot}/model.safetensors.index.json' && test -f '${snapshot}/chat_template.jinja'" \
-    || return 1
-  count="$(wrun "find -L '${snapshot}' -maxdepth 1 -type f -name '*.safetensors' | wc -l" | tr -d ' ')"
-  (( count >= 120 ))
+verify_dflash_snapshot() {
+  local snapshot="$1" label="$2"
+  [[ -f "${snapshot}/config.json" ]] || die "${label}: missing DFlash2 config.json"
+  [[ -f "${snapshot}/model.safetensors" ]] || die "${label}: missing DFlash2 model.safetensors"
+  log "${label}: DFlash2 snapshot verified"
+}
+
+verify_worker_snapshots() {
+  local target draft command
+  target="$(worker_snapshot_path "${MODEL_ID}" "${MODEL_REVISION}")"
+  command="test -f '${target}/config.json' && test -f '${target}/model.safetensors.index.json' && test \"\$(find -L '${target}' -maxdepth 1 -type f -name '*.safetensors' | wc -l)\" -ge 120"
+  if [[ "${SPEC_METHOD}" == "dflash" ]]; then
+    draft="$(worker_snapshot_path "${DFLASH_MODEL_ID}" "${DFLASH_MODEL_REVISION}")"
+    command+=" && test -f '${draft}/config.json' && test -f '${draft}/model.safetensors'"
+  fi
+  wrun "${command}"
+}
+
+pin_head_ref() {
+  local repo_id="$1" revision="$2" repo tmp
+  repo="${HF_HOME}/hub/$(model_cache_name "${repo_id}")"
+  mkdir -p "${repo}/refs"
+  tmp="$(mktemp "${repo}/refs/.main.ml-compute.XXXXXX")"
+  printf '%s\n' "${revision}" >"${tmp}"
+  mv "${tmp}" "${repo}/refs/main"
+}
+
+pin_worker_ref() {
+  local repo_id="$1" revision="$2" repo
+  repo="$(worker_hf_home)/hub/$(model_cache_name "${repo_id}")"
+  wrun "mkdir -p '${repo}/refs'; printf '%s\\n' '${revision}' > '${repo}/refs/.main.ml-compute'; mv '${repo}/refs/.main.ml-compute' '${repo}/refs/main'"
 }
 
 pin_model_refs() {
-  local head_repo head_tmp worker_repo
-  head_repo="${HF_HOME}/hub/$(model_cache_name)"
-  worker_repo="$(worker_hf_home)/hub/$(model_cache_name)"
-  mkdir -p "${head_repo}/refs"
-  head_tmp="$(mktemp "${head_repo}/refs/.main.ml-compute.XXXXXX")"
-  printf '%s\n' "${MODEL_REVISION}" >"${head_tmp}"
-  mv "${head_tmp}" "${head_repo}/refs/main"
-  wrun "mkdir -p '${worker_repo}/refs'; printf '%s\\n' '${MODEL_REVISION}' > '${worker_repo}/refs/.main.ml-compute'; mv '${worker_repo}/refs/.main.ml-compute' '${worker_repo}/refs/main'"
-  log "Pinned MiaAI cache refs/main to ${MODEL_REVISION} on both nodes"
+  pin_head_ref "${MODEL_ID}" "${MODEL_REVISION}"
+  pin_worker_ref "${MODEL_ID}" "${MODEL_REVISION}"
+  if [[ "${SPEC_METHOD}" == "dflash" ]]; then
+    pin_head_ref "${DFLASH_MODEL_ID}" "${DFLASH_MODEL_REVISION}"
+    pin_worker_ref "${DFLASH_MODEL_ID}" "${DFLASH_MODEL_REVISION}"
+  fi
+  log "Pinned active target/draft cache refs/main on both nodes"
 }
 
 check_disk() {
@@ -554,9 +598,9 @@ check_disk() {
   worker_free="$(( worker_free / 1024 / 1024 ))"
   required="${GLM53_MIN_DISK_GIB}"
   (( head_free >= required )) \
-    || die "Head has ${head_free} GiB free under ${HF_HOME}; first download requires ${required} GiB"
+    || die "Head has ${head_free} GiB free; initial staging requires ${required} GiB"
   (( worker_free >= required )) \
-    || die "Worker has ${worker_free} GiB free under ${worker_cache}; mirror requires ${required} GiB"
+    || die "Worker has ${worker_free} GiB free; mirror requires ${required} GiB"
   log "Disk free: head ${head_free} GiB, worker ${worker_free} GiB"
 }
 
@@ -579,6 +623,7 @@ check_launch_memory() {
 check_host() {
   check_recipe_pin
   validate_profile
+  warn_dflash_license
   need_cmd docker
   need_cmd curl
   need_cmd rsync
@@ -599,44 +644,94 @@ check_host() {
     || die "Direct RoCE address ${WORKER_CX7_IP} is unreachable from the head"
   check_disk
   check_proxy_key
-  log "Pinned MiaAI dual-Spark GLM preflight passed"
+  log "Pinned MiaAI EXL3 dual-Spark preflight passed"
 }
 
-image_revision() {
-  docker image inspect --format '{{ index .Config.Labels "org.ml-compute.upstream.revision" }}' \
-    "$1" 2>/dev/null || true
-}
-
-worker_image_revision() {
-  worker_docker image inspect --format '{{ index .Config.Labels "org.ml-compute.upstream.revision" }}' \
-    "$1" 2>/dev/null || true
-}
-
-build_image_on_head() {
-  local kernel_dockerfile serving_dockerfile
-  kernel_dockerfile="${RECIPE_DIR}/files/Dockerfile"
-  serving_dockerfile="${RECIPE_DIR}/files/Dockerfile.mm-ray"
-  [[ -f "${kernel_dockerfile}" && -f "${serving_dockerfile}" ]] \
-    || die "Pinned MiaAI Dockerfiles are missing under ${RECIPE_DIR}/files"
-
-  if ! docker image inspect "${VLLM_BASE_IMAGE}" >/dev/null 2>&1; then
-    docker pull "${VLLM_BASE_IMAGE}"
-  fi
-
-  log "Building MiaAI SM121/NoPE kernel image ${KERNEL_IMAGE}"
+write_upstream_env() {
+  check_recipe_pin
+  local remote_root tmp
+  remote_root="$(worker_home)"
+  tmp="$(mktemp "${RECIPE_DIR}/.env.ml-compute.XXXXXX")"
   {
-    awk -v from="FROM ${VLLM_BASE_IMAGE}" 'NR == 1 {$0 = from} {print}' \
-      "${kernel_dockerfile}"
-    printf '\nLABEL org.ml-compute.upstream.revision="%s"\n' "${UPSTREAM_REVISION}"
-  } | docker build --network host -f - --tag "${KERNEL_IMAGE}" "${RECIPE_DIR}/files"
+    printf '# Generated by ml-compute; edit %s instead.\n' "${PROFILE_FILE}"
+    printf 'HEAD_IP=%s\n' "${HEAD_CX7_IP}"
+    printf 'WORKER_IP=%s\n' "${WORKER_CX7_IP}"
+    printf 'WORKER_USER=%s\n' "${WORKER_USER}"
+    printf 'WORKER_HOME=%s\n' "${remote_root}"
+    printf 'WORKER_SSH=%s\n' "$(worker_ssh_target)"
+    printf 'HEAD_CX7_IF=%s\n' "${HEAD_CX7_IF}"
+    printf 'WORKER_CX7_IF=%s\n' "${WORKER_CX7_IF}"
+    printf 'HEAD_CX7_IB=%s\n' "${HEAD_CX7_IB}"
+    printf 'WORKER_CX7_IB=%s\n' "${WORKER_CX7_IB}"
+    printf 'MODEL=%s\n' "${MODEL_ID}"
+    printf 'HF_HOME=%s\n' "${HF_HOME}"
+    printf 'IMAGE=%s\n' "${VLLM_IMAGE}"
+    printf 'PORT=%s\n' "${PORT}"
+    printf 'HOST_BIND=%s\n' "${HOST_BIND}"
+    printf 'TP=%s\n' "${TENSOR_PARALLEL_SIZE}"
+    printf 'NNODES=%s\n' "${NUM_NODES}"
+    printf 'MASTER_PORT=%s\n' "${MASTER_PORT}"
+    printf 'QUANTIZATION=%s\n' "${QUANTIZATION}"
+    printf 'ENFORCE_EAGER=%s\n' "${ENFORCE_EAGER}"
+    printf 'EXL3_FUSED_MOE=%s\n' "${EXL3_FUSED_MOE}"
+    printf 'SERVED_MODEL_NAME=%s\n' "${SERVED_MODEL_NAME}"
+    printf 'SPEC_METHOD=%s\n' "${SPEC_METHOD}"
+    printf 'DFLASH_MODEL=%s\n' "${DFLASH_MODEL_ID}"
+    printf 'DFLASH_TOKENS=%s\n' "${DFLASH_SPECULATIVE_TOKENS}"
+    printf 'DFLASH_DRAFT_TP=%s\n' "${DFLASH_DRAFT_TP}"
+    printf 'MTP_TOKENS=%s\n' "${MTP_SPECULATIVE_TOKENS}"
+    printf 'MAX_MODEL_LEN=%s\n' "${MAX_MODEL_LEN}"
+    printf 'MAX_NUM_SEQS=%s\n' "${MAX_NUM_SEQS}"
+    printf 'MAX_NUM_BATCHED_TOKENS=%s\n' "${MAX_NUM_BATCHED_TOKENS}"
+    printf 'GPU_MEM_UTIL=%s\n' "${GPU_MEMORY_UTILIZATION}"
+    printf 'KV_CACHE_DTYPE=%s\n' "${KV_CACHE_DTYPE}"
+    printf 'LANGUAGE_MODEL_ONLY=%s\n' "${LANGUAGE_MODEL_ONLY}"
+    printf 'SKIP_MM_PROFILING=%s\n' "${SKIP_MM_PROFILING}"
+    printf 'LIMIT_MM=%q\n' "${LIMIT_MM}"
+    printf 'TORCH_CUDA_ARCH_LIST=%s\n' "${TORCH_CUDA_ARCH_LIST}"
+    printf 'FLASHINFER_CUDA_ARCH_LIST=%s\n' "${FLASHINFER_CUDA_ARCH_LIST}"
+    printf 'USE_HOST_NCCL=%s\n' "${USE_HOST_NCCL}"
+    printf 'NCCL_HOST_DIR=%s\n' "${NCCL_HOST_DIR:-${HOME}/nccl-2.30.7}"
+    printf 'WORKER_NCCL_HOST_DIR=%s\n' "${WORKER_NCCL_HOST_DIR:-${remote_root}/nccl-2.30.7}"
+    printf 'NCCL_SO_NAME=%s\n' "${NCCL_SO_NAME}"
+    printf 'NCCL_IB_GID_INDEX=%s\n' "${NCCL_IB_GID_INDEX}"
+    printf 'NCCL_CROSS_NIC=%s\n' "${NCCL_CROSS_NIC}"
+    printf 'NCCL_DEBUG=%s\n' "${NCCL_DEBUG}"
+    printf 'READY_TIMEOUT=%s\n' "${VLLM_ENGINE_READY_TIMEOUT_S}"
+    printf 'CACHE_ROOT=%s\n' "${CACHE_ROOT}"
+    printf 'WORKER_VLLM_CACHE=%s\n' "$(worker_vllm_cache)"
+    printf 'CONTAINER_HEAD=%s\n' "${GLM53_HEAD_CONTAINER}"
+    printf 'CONTAINER_WORKER=%s\n' "${GLM53_WORKER_CONTAINER}"
+    printf 'EXTRA_ARGS=%q\n' "${EXTRA_ARGS}"
+  } >"${tmp}"
+  mv "${tmp}" "${UPSTREAM_ENV}"
+}
 
-  log "Building MiaAI Ray/MM serving image ${VLLM_IMAGE}"
+configure() {
+  check_recipe_pin
+  validate_profile
+  mkdir -p "${RUNTIME_DIR}" "${RUNTIME_DIR}/logs" "${HF_HOME}" "${CACHE_ROOT}"
+  local env_tmp key
+  env_tmp="$(mktemp "${RUNTIME_DIR}/.env.glm53.XXXXXX")"
   {
-    awk -v from="FROM ${KERNEL_IMAGE}" 'NR == 1 {$0 = from} {print}' \
-      "${serving_dockerfile}"
-    printf '\nLABEL org.ml-compute.upstream.revision="%s" org.ml-compute.ray.version="%s"\n' \
-      "${UPSTREAM_REVISION}" "${RAY_VERSION}"
-  } | docker build --network host -f - --tag "${VLLM_IMAGE}" "${RECIPE_DIR}/files"
+    printf '# Generated by ml-compute; edit %s instead.\n' "${PROFILE_FILE}"
+    printf 'UPSTREAM_REVISION=%s\n' "${UPSTREAM_REVISION}"
+    while IFS= read -r key; do
+      [[ -n "${key}" ]] || continue
+      printf '%s=%s\n' "${key}" "${!key}"
+    done < <(resolved_keys)
+  } >"${env_tmp}"
+  mv "${env_tmp}" "${RESOLVED_ENV}"
+  write_upstream_env
+  log "Validated profile at ${RESOLVED_ENV} and materialized MiaAI environment"
+}
+
+image_id() {
+  docker image inspect --format '{{.Id}}' "$1" 2>/dev/null || true
+}
+
+worker_image_id() {
+  worker_docker image inspect --format '{{.Id}}' "$1" 2>/dev/null || true
 }
 
 ship_image_to_worker() {
@@ -647,74 +742,100 @@ ship_image_to_worker() {
 ensure_image() {
   check_recipe_pin
   validate_profile
-  local head_revision worker_revision
-  head_revision="$(image_revision "${VLLM_IMAGE}")"
-  worker_revision="$(worker_image_revision "${VLLM_IMAGE}")"
-  if [[ "${head_revision}" != "${UPSTREAM_REVISION}" ]]; then
-    build_image_on_head
-    head_revision="$(image_revision "${VLLM_IMAGE}")"
+  local source_id local_id worker_id
+  if ! docker image inspect "${VLLM_SOURCE_IMAGE}" >/dev/null 2>&1; then
+    log "Pulling digest-pinned MiaAI EXL3 image"
+    docker pull "${VLLM_SOURCE_IMAGE}"
   fi
-  [[ "${head_revision}" == "${UPSTREAM_REVISION}" ]] \
-    || die "Head image is not labeled for the pinned MiaAI revision"
-  if [[ "${worker_revision}" != "${UPSTREAM_REVISION}" ]]; then
+  source_id="$(image_id "${VLLM_SOURCE_IMAGE}")"
+  [[ -n "${source_id}" ]] || die "Unable to inspect pinned source image"
+  local_id="$(image_id "${VLLM_IMAGE}")"
+  if [[ "${local_id}" != "${source_id}" ]]; then
+    docker tag "${VLLM_SOURCE_IMAGE}" "${VLLM_IMAGE}"
+    local_id="$(image_id "${VLLM_IMAGE}")"
+  fi
+  [[ "${local_id}" == "${source_id}" ]] \
+    || die "Local runtime tag does not resolve to the pinned OCI digest"
+  worker_id="$(worker_image_id "${VLLM_IMAGE}")"
+  if [[ "${worker_id}" != "${local_id}" ]]; then
     ship_image_to_worker
-    worker_revision="$(worker_image_revision "${VLLM_IMAGE}")"
+    worker_id="$(worker_image_id "${VLLM_IMAGE}")"
   fi
-  [[ "${worker_revision}" == "${UPSTREAM_REVISION}" ]] \
-    || die "Worker image is not labeled for the pinned MiaAI revision"
-  log "MiaAI SM121 serving image is ready on both nodes (Ray ${RAY_VERSION})"
+  [[ "${worker_id}" == "${local_id}" ]] \
+    || die "Worker image ID does not match the head"
+  log "Digest-pinned EXL3 image is ready on both nodes"
 }
 
 gpu_check() {
   ensure_image
-  local probe
-  probe="python3 -c 'import importlib.metadata as m, pathlib, ray, torch, vllm; names={d.metadata.get(\"Name\", \"\").lower().replace(\"_\", \"-\") for d in m.distributions()}; cuda=pathlib.Path(\"/usr/local/lib/python3.12/dist-packages/vllm/platforms/cuda.py\").read_text(); sm90=pathlib.Path(\"/usr/local/lib/python3.12/dist-packages/vllm/v1/attention/backends/mla/flashinfer_mla_sparse_sm90.py\").read_text(); assert torch.cuda.is_available(); assert ray.__version__ == \"${RAY_VERSION}\"; assert \"cupy-cuda12x\" not in names; assert \"FLASHINFER_MLA_SPARSE_SM90\" in cuda; assert \"capability.major in (9, 12)\" in sm90; print(torch.cuda.get_device_name(0), \"vllm\", vllm.__version__, \"ray\", ray.__version__, \"sm121_nope_patch=1\")'"
-  docker run --rm --gpus all --entrypoint /bin/bash "${VLLM_IMAGE}" -lc "${probe}"
-  worker_docker run --rm --gpus all --entrypoint /bin/bash "${VLLM_IMAGE}" -lc "${probe}"
+  local -a probe=(--rm --gpus all -e EXL3_SELFCHECK_GPU=1 --entrypoint python3 "${VLLM_IMAGE}" /opt/glm53/test_exl3_overlay.py)
+  log "Running EXL3/SM121/DFlash2 GPU self-check on the head"
+  docker run "${probe[@]}"
+  log "Running EXL3/SM121/DFlash2 GPU self-check on the worker"
+  worker_docker run "${probe[@]}"
+}
+
+download_snapshot() {
+  local repo_id="$1" revision="$2" description="$3" python
+  log "Downloading ${repo_id}@${revision} (${description})"
+  if command -v hf >/dev/null 2>&1; then
+    HF_HOME="${HF_HOME}" hf download "${repo_id}" --revision "${revision}"
+  elif command -v huggingface-cli >/dev/null 2>&1; then
+    HF_HOME="${HF_HOME}" huggingface-cli download "${repo_id}" --revision "${revision}"
+  else
+    python="$(project_python)"
+    HF_HOME="${HF_HOME}" MODEL_ID="${repo_id}" MODEL_REVISION="${revision}" \
+      "${python}" -c 'import os; from huggingface_hub import snapshot_download; snapshot_download(os.environ["MODEL_ID"], revision=os.environ["MODEL_REVISION"], token=os.environ.get("HF_TOKEN"))'
+  fi
 }
 
 download_on_head() {
-  local snapshot python
-  snapshot="$(snapshot_path)"
-  if [[ -d "${snapshot}" ]]; then
-    verify_snapshot "${snapshot}" "head cache"
-    return
+  local target draft
+  target="$(snapshot_path "${MODEL_ID}" "${MODEL_REVISION}")"
+  if [[ ! -d "${target}" ]]; then
+    download_snapshot "${MODEL_ID}" "${MODEL_REVISION}" "~164 GiB EXL3 target"
   fi
-  mkdir -p "${HF_HOME}"
-  log "Downloading ${MODEL_ID}@${MODEL_REVISION} (~181 GiB)"
-  if command -v hf >/dev/null 2>&1; then
-    HF_HOME="${HF_HOME}" hf download "${MODEL_ID}" --revision "${MODEL_REVISION}"
-  elif command -v huggingface-cli >/dev/null 2>&1; then
-    HF_HOME="${HF_HOME}" huggingface-cli download "${MODEL_ID}" --revision "${MODEL_REVISION}"
-  else
-    python="$(project_python)"
-    HF_HOME="${HF_HOME}" MODEL_ID="${MODEL_ID}" MODEL_REVISION="${MODEL_REVISION}" \
-      "${python}" -c 'import os; from huggingface_hub import snapshot_download; snapshot_download(os.environ["MODEL_ID"], revision=os.environ["MODEL_REVISION"], token=os.environ.get("HF_TOKEN"))'
+  verify_target_snapshot "${target}" "head cache"
+  pin_head_ref "${MODEL_ID}" "${MODEL_REVISION}"
+  if [[ "${SPEC_METHOD}" == "dflash" ]]; then
+    draft="$(snapshot_path "${DFLASH_MODEL_ID}" "${DFLASH_MODEL_REVISION}")"
+    if [[ ! -d "${draft}" ]]; then
+      download_snapshot "${DFLASH_MODEL_ID}" "${DFLASH_MODEL_REVISION}" "~2.3 GiB DFlash2 draft"
+    fi
+    verify_dflash_snapshot "${draft}" "head cache"
+    pin_head_ref "${DFLASH_MODEL_ID}" "${DFLASH_MODEL_REVISION}"
   fi
-  verify_snapshot "${snapshot}" "head cache"
+}
+
+sync_repo_to_worker() {
+  local repo_id="$1" head_repo worker_repo
+  head_repo="${HF_HOME}/hub/$(model_cache_name "${repo_id}")"
+  worker_repo="$(worker_hf_home)/hub/$(model_cache_name "${repo_id}")"
+  wrun "mkdir -p '${worker_repo}'"
+  rsync -a --partial --info=progress2,stats1 --exclude '.locks' \
+    -e 'ssh -o ConnectTimeout=15 -o StrictHostKeyChecking=accept-new -o BatchMode=yes' \
+    "${head_repo}/" "$(worker_ssh_target):${worker_repo}/"
 }
 
 sync_weights_to_worker() {
-  local head_repo worker_repo
-  if verify_worker_snapshot; then
-    log "Worker cache: pinned snapshot already verified"
+  if verify_worker_snapshots; then
+    log "Worker cache: active target/draft snapshots already verified"
     return
   fi
   [[ "${DOWNLOAD_MODE}" == "rsync" ]] \
     || die "Only DOWNLOAD_MODE=rsync is reviewed for this two-Spark recipe"
-  head_repo="${HF_HOME}/hub/$(model_cache_name)"
-  worker_repo="$(worker_hf_home)/hub/$(model_cache_name)"
-  wrun "mkdir -p '${worker_repo}'"
-  log "Mirroring the pinned GLM cache to the worker over RoCE (resumable)"
-  rsync -a --partial --info=progress2,stats1 --exclude '.locks' \
-    -e 'ssh -o ConnectTimeout=15 -o StrictHostKeyChecking=accept-new -o BatchMode=yes' \
-    "${head_repo}/" "$(worker_ssh_target):${worker_repo}/"
-  verify_worker_snapshot || die "Worker snapshot verification failed after rsync"
-  log "Worker cache: pinned snapshot verified"
+  log "Mirroring the pinned EXL3 target to the worker over RoCE"
+  sync_repo_to_worker "${MODEL_ID}"
+  if [[ "${SPEC_METHOD}" == "dflash" ]]; then
+    log "Mirroring the pinned DFlash2 draft to the worker over RoCE"
+    sync_repo_to_worker "${DFLASH_MODEL_ID}"
+  fi
+  verify_worker_snapshots || die "Worker snapshot verification failed after rsync"
 }
 
 download_model() {
   validate_profile
+  warn_dflash_license
   check_disk
   download_on_head
   sync_weights_to_worker
@@ -726,28 +847,26 @@ materialize_upstream_launcher() {
   local target="${RECIPE_DIR}/.ml-compute-start.sh"
   local tmp
   [[ -f "${source}" ]] || die "Pinned upstream launcher is missing: ${source}"
+  [[ -f "${RECIPE_DIR}/files/chat_template.jinja" ]] \
+    || die "Pinned upstream chat template is missing"
   tmp="$(mktemp "${RECIPE_DIR}/.ml-compute-start.XXXXXX")"
   if ! awk '
-    BEGIN { limit_mm = 0; host = 0; eager = 0 }
-    /^LIMIT_MM="\$\{LIMIT_MM:-/ {
-      print "LIMIT_MM=\"${LIMIT_MM:-}\""
-      limit_mm++
-      next
-    }
+    BEGIN { host = 0; endpoint = 0 }
     /^[[:space:]]+--host 0\.0\.0\.0$/ {
-      print "    --host \"${HOST_BIND:-0.0.0.0}\""
+      print "    --host \"${HOST_BIND:-127.0.0.1}\""
       host++
       next
     }
-    /ARGS\+=\(--moe-backend marlin --enforce-eager\)/ {
-      sub(/ --enforce-eager/, "")
-      eager++
+    /log "  endpoints  : http:\/\/127\.0\.0\.1:/ && /LAN:/ {
+      print "    log \"  endpoint   : http://127.0.0.1:${PORT}/v1 (private raw API)\""
+      endpoint++
+      next
     }
     { print }
-    END { if (limit_mm != 1 || host != 1 || eager != 1) exit 42 }
+    END { if (host != 2 || endpoint != 1) exit 42 }
   ' "${source}" >"${tmp}"; then
     rm -f "${tmp}"
-    die "Pinned MiaAI launcher no longer matches the reviewed adapter patches"
+    die "Pinned MiaAI launcher no longer matches the reviewed loopback patch"
   fi
   chmod +x "${tmp}"
   mv "${tmp}" "${target}"
@@ -757,55 +876,13 @@ run_upstream() (
   check_recipe_pin
   validate_profile
   resolve_cluster_interfaces
+  write_upstream_env
   materialize_upstream_launcher
-  local target remote_root
-  target="$(worker_ssh_target)"
-  remote_root="$(worker_home)"
   cd "${RECIPE_DIR}"
-  IMAGE="${VLLM_IMAGE}" \
-  RAY_VERSION="${RAY_VERSION}" \
-  HEAD_IP="${HEAD_CX7_IP}" \
-  WORKER_IP="${WORKER_CX7_IP}" \
-  WORKER_SSH="${target}" \
-  WORKER_HOME="${remote_root}" \
-  HEAD_CX7_IF="${HEAD_CX7_IF}" \
-  WORKER_CX7_IF="${WORKER_CX7_IF}" \
-  HEAD_CX7_IB="${HEAD_CX7_IB}" \
-  WORKER_CX7_IB="${WORKER_CX7_IB}" \
-  RAY_PORT="${RAY_HEAD_PORT}" \
-  RAY_OBJECT_STORE_MEMORY="${RAY_OBJECT_STORE_MEMORY}" \
-  TP="${TENSOR_PARALLEL_SIZE}" \
-  PORT="${PORT}" \
-  HOST_BIND="${HOST_BIND}" \
-  MTP_TOKENS="${MTP_SPECULATIVE_TOKENS}" \
-  MAX_MODEL_LEN="${MAX_MODEL_LEN}" \
-  GPU_MEM_UTIL="${GPU_MEMORY_UTILIZATION}" \
-  BLOCK_SIZE="${BLOCK_SIZE}" \
-  MAX_NUM_SEQS="${MAX_NUM_SEQS}" \
-  KV_CACHE_DTYPE="${KV_CACHE_DTYPE}" \
-  KV_CACHE_MEMORY="${KV_CACHE_MEMORY}" \
-  LIMIT_MM="${LIMIT_MM}" \
-  SKIP_MM_PROFILING="${SKIP_MM_PROFILING}" \
-  MOE_BACKEND="${MOE_BACKEND}" \
-  ENFORCE_EAGER="${ENFORCE_EAGER}" \
-  TORCH_CUDA_ARCH_LIST="${TORCH_CUDA_ARCH_LIST}" \
-  FLASHINFER_CUDA_ARCH_LIST="${FLASHINFER_CUDA_ARCH_LIST}" \
-  HF_HOME="${HF_HOME}" \
-  READY_TIMEOUT="${VLLM_ENGINE_READY_TIMEOUT_S}" \
-  CLUSTER_WAIT_ITERS="${CLUSTER_WAIT_ITERS}" \
-  CACHE_VOLUME="${CACHE_VOLUME}" \
-  USE_HOST_NCCL="${USE_HOST_NCCL}" \
-  NCCL_HOST_DIR="${NCCL_HOST_DIR:-${HOME}/nccl-2.30.7}" \
-  WORKER_NCCL_HOST_DIR="${WORKER_NCCL_HOST_DIR:-${remote_root}/nccl-2.30.7}" \
-  NCCL_SO_NAME="${NCCL_SO_NAME}" \
-  NCCL_DEBUG="${NCCL_DEBUG}" \
-  NCCL_IB_GID_INDEX="${NCCL_IB_GID_INDEX}" \
-  NCCL_CROSS_NIC="${NCCL_CROSS_NIC}" \
-  CHAT_TEMPLATE_URL="https://huggingface.co/${MODEL_ID}/resolve/${MODEL_REVISION}/chat_template.jinja" \
-  HF_HUB_OFFLINE=1 \
+  SKIP_PULL=1 \
   SKIP_DOWNLOAD=1 \
   SKIP_SYNC=1 \
-  EXTRA_ARGS="${EXTRA_ARGS}" \
+  HF_HUB_OFFLINE=1 \
   TAIL=0 \
   ./.ml-compute-start.sh "$@"
 )
@@ -849,28 +926,30 @@ stop_legacy_cluster() {
 }
 
 show_failure_diagnostics() {
-  local scan
-  scan='root=/tmp/ray/session_latest/logs; [ -d "$root" ] || exit 0; find "$root" -maxdepth 1 -type f \( -name "worker-*.err" -o -name "worker-*.out" -o -name "python-core-worker-*.log" \) -size +0c -printf "%T@ %p\\n" | sort -n | tail -n 16 | cut -d" " -f2- | while IFS= read -r file; do printf "\\n===== %s =====\\n" "$file"; tail -n 180 "$file"; done'
+  printf '\nHead container state:\n'
+  docker inspect --format '{{json .State}}' "${GLM53_HEAD_CONTAINER}" 2>/dev/null || true
   printf '\nHead container log:\n'
-  docker logs --tail 400 "${GLM53_HEAD_CONTAINER}" 2>&1 || true
-  printf '\nRay cluster status:\n'
-  docker exec "${GLM53_HEAD_CONTAINER}" ray status 2>&1 || true
-  printf '\nRecent Ray worker logs (head):\n'
-  docker exec "${GLM53_HEAD_CONTAINER}" /bin/bash -lc "${scan}" 2>&1 || true
-  printf '\nRecent Ray worker logs (worker):\n'
-  worker_docker exec "${GLM53_WORKER_CONTAINER}" /bin/bash -lc "${scan}" 2>&1 || true
+  docker logs --tail 500 "${GLM53_HEAD_CONTAINER}" 2>&1 || true
+  printf '\nWorker container state:\n'
+  worker_docker inspect --format '{{json .State}}' "${GLM53_WORKER_CONTAINER}" 2>/dev/null || true
+  printf '\nWorker container log:\n'
+  worker_docker logs --tail 500 "${GLM53_WORKER_CONTAINER}" 2>&1 || true
 }
 
 start_service() {
   check_recipe_pin
   validate_profile
+  warn_dflash_license
   check_proxy_key
   check_public_exposure
   if raw_model_ready; then
-    log "Pinned GLM model is already ready on the private raw endpoint"
+    log "Pinned EXL3 model is already ready on the private raw endpoint"
   else
-    verify_snapshot "$(snapshot_path)" "head cache"
-    verify_worker_snapshot || die "Pinned worker snapshot is missing; run glm53-flash download"
+    verify_target_snapshot "$(snapshot_path "${MODEL_ID}" "${MODEL_REVISION}")" "head cache"
+    if [[ "${SPEC_METHOD}" == "dflash" ]]; then
+      verify_dflash_snapshot "$(snapshot_path "${DFLASH_MODEL_ID}" "${DFLASH_MODEL_REVISION}")" "head cache"
+    fi
+    verify_worker_snapshots || die "Pinned worker snapshots are missing; run glm53-flash download"
     pin_model_refs
     ensure_image
     stop_legacy_cluster
@@ -915,7 +994,7 @@ show_memory() {
   nvidia-smi || true
   printf '\nWorker memory (%s):\n' "${target}"
   wrun 'free -h; nvidia-smi' || true
-  warn "The 181 GiB checkpoint is a dedicated two-Spark workload"
+  warn "The ~164 GiB EXL3 target plus DFlash2 is a dedicated two-Spark workload"
 }
 
 inference_smoke() (
@@ -940,7 +1019,7 @@ choices = payload.get("choices") or []
 message = choices[0].get("message", {}) if choices else {}
 if not (message.get("content") or message.get("reasoning_content")):
     raise SystemExit(f"invalid chat response: {payload}")
-print("GLM-5.3 Flash model completion passed")
+print("GLM-5.3 Flash EXL3 completion passed")
 PY
 )
 
@@ -971,17 +1050,18 @@ case "${action}" in
   diagnose) load_profile; show_failure_diagnostics ;;
   memory) load_profile; show_memory ;;
   smoke) load_profile; inference_smoke ;;
-  logs) load_profile; run_upstream logs head ;;
+  logs) load_profile; run_upstream logs ;;
   logs-worker) load_profile; run_upstream logs worker ;;
   stop) stop_service ;;
   update) sync_recipe_pin ;;
   all) bootstrap; configure; check_host; download_model; ensure_image; gpu_check; start_service ;;
   path)
     load_profile
-    printf 'recipe=%s\nprofile=%s\nruntime=%s\nhf_home=%s\nupstream_revision=%s\nmodel_revision=%s\nbase_image=%s\nkernel_image=%s\nimage=%s\nray_version=%s\nobject_store_bytes=%s\n' \
+    printf 'recipe=%s\nprofile=%s\nruntime=%s\nhf_home=%s\nupstream_revision=%s\nmodel_revision=%s\ndflash_revision=%s\nbase_image=%s\nsource_image=%s\nimage=%s\nexecutor=%s\nspec_method=%s\n' \
       "${RECIPE_DIR}" "${PROFILE_FILE}" "${RUNTIME_DIR}" "${HF_HOME}" \
-      "${UPSTREAM_REVISION}" "${MODEL_REVISION}" "${VLLM_BASE_IMAGE}" \
-      "${KERNEL_IMAGE}" "${VLLM_IMAGE}" "${RAY_VERSION}" "${RAY_OBJECT_STORE_MEMORY}"
+      "${UPSTREAM_REVISION}" "${MODEL_REVISION}" "${DFLASH_MODEL_REVISION}" \
+      "${VLLM_BASE_IMAGE}" "${VLLM_SOURCE_IMAGE}" "${VLLM_IMAGE}" \
+      "${DISTRIBUTED_EXECUTOR_BACKEND}" "${SPEC_METHOD}"
     ;;
   help|-h|--help) usage ;;
   *) die "Unknown action: ${action}. Run glm53-flash help" ;;
