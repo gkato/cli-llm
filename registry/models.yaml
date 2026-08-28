@@ -966,7 +966,8 @@ models:
     max_model_len: 900000
     max_num_seqs: 4
     max_num_batched_tokens: 1024
-    gpu_memory_utilization: 0.87
+    gpu_memory_utilization: 0.8847
+    cuda_graph_memory_profiler: true
     kv_cache_dtype: fp8
     moe_backend: exl3_fused
     enforce_eager: false
