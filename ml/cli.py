@@ -77,11 +77,11 @@ COMMON WORKFLOWS
     ml.cli qwen38-flash-next start        # worker-first TP=2 + safety proxy
 
 \b
-  Two-node Ray/vLLM serving (GLM-5.3 Flash NVFP4, MiaAI GB10 recipe):
+  Two-node MP/vLLM serving (GLM-5.3 Flash EXL3, MiaAI GB10 recipe):
     ml.cli glm53-flash setup              # pin MiaAI recipe + check both nodes
-    ml.cli glm53-flash pull               # build SM121/NoPE image + Ray 2.58
-    ml.cli glm53-flash download           # download + mirror 181 GiB weights
-    ml.cli glm53-flash start              # Ray TP=2 + safety proxy
+    ml.cli glm53-flash pull               # pull digest-pinned EXL3/SM121 image
+    ml.cli glm53-flash download           # mirror target + active draft weights
+    ml.cli glm53-flash start              # direct MP TP=2 + safety proxy
 
 \b
   One-node DSpark serving (DeepSeek V4 Flash 0731 EXL3):
@@ -1065,7 +1065,7 @@ def qwen38_flash_next_cmd(action: str):
 
 
 # ---------------------------------------------------------------------------
-# GLM-5.3 Flash — MiaAI patched vLLM image over a two-node Ray cluster
+# GLM-5.3 Flash — MiaAI EXL3 vLLM image over two direct MP nodes
 # ---------------------------------------------------------------------------
 
 GLM53_FLASH_ACTIONS = [
@@ -1084,13 +1084,13 @@ GLM53_FLASH_ACTIONS = [
     type=click.Choice(GLM53_FLASH_ACTIONS, case_sensitive=False),
 )
 def glm53_flash_cmd(action: str):
-    """Manage GLM-5.3 Flash NVFP4 across two linked DGX Sparks.
+    """Manage GLM-5.3 Flash EXL3 across two linked DGX Sparks.
 
     \b
-    This delegates to MiaAI-Lab's SM121-patched vLLM/Ray TP=2 recipe while
-    ml-compute pins its revision, model, and base image. We mirror weights to
-    both nodes and keep raw vLLM on loopback :8888 behind the authenticated
-    safety proxy on :8000.
+    This delegates to MiaAI-Lab's fused-EXL3 vLLM/MP TP=2 recipe while
+    ml-compute pins its revision, target, draft, and OCI image. We mirror the
+    active weights to both nodes and keep raw vLLM on loopback :8888 behind
+    the authenticated safety proxy on :8000.
 
     \b
     Typical sequence:
