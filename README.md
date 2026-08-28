@@ -416,8 +416,10 @@ the fused EXL3 MoE path and CUDA graphs, and raises the reviewed request ceiling
 from 256K to 900K. The measured default adds
 [`incoai/GLM-5.3-Flash-DFlash2`](https://huggingface.co/incoai/GLM-5.3-Flash-DFlash2)
 with seven speculative tokens and a rank-0-only draft. The conservative launch
-shape remains four sequences, 1K prefill chunks, 0.87 memory utilization, FP8
+shape remains four sequences, 1K prefill chunks, 0.8847 memory utilization, FP8
 MLA KV, prefix caching, and skipped maximum-size multimodal dummy profiling.
+The 0.8847 value is vLLM v0.21's reported CUDA-graph-adjusted equivalent of the
+upstream 0.87 budget and retains enough KV for one complete 900K request.
 
 The runtime image is pulled by immutable GHCR digest and shipped to the worker.
 The adapter runs MiaAI's GPU self-check on both Sparks, uses the upstream worker-

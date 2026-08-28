@@ -151,7 +151,7 @@ QUANTIZATION|exl3
 MAX_MODEL_LEN|900000
 MAX_NUM_SEQS|4
 MAX_NUM_BATCHED_TOKENS|1024
-GPU_MEMORY_UTILIZATION|0.87
+GPU_MEMORY_UTILIZATION|0.8847
 KV_CACHE_DTYPE|fp8
 ENFORCE_EAGER|0
 EXL3_FUSED_MOE|1
@@ -279,8 +279,8 @@ validate_profile() {
     || die "MAX_NUM_SEQS must be between 1 and MiaAI's reviewed value 4"
   (( MAX_NUM_BATCHED_TOKENS > 0 && MAX_NUM_BATCHED_TOKENS <= 1024 )) \
     || die "MAX_NUM_BATCHED_TOKENS above 1024 can exhaust the GB10 indexer on long prefill"
-  awk -v value="${GPU_MEMORY_UTILIZATION}" 'BEGIN {exit !(value > 0 && value <= 0.87)}' \
-    || die "GPU_MEMORY_UTILIZATION must not exceed MiaAI's reviewed 0.87"
+  awk -v value="${GPU_MEMORY_UTILIZATION}" 'BEGIN {exit !(value > 0 && value <= 0.8847)}' \
+    || die "GPU_MEMORY_UTILIZATION must not exceed the CUDA-graph-adjusted 0.8847"
   [[ "${KV_CACHE_DTYPE}" == "fp8" ]] \
     || die "KV_CACHE_DTYPE must remain fp8 for packed fp8_ds_mla"
   [[ "${ENFORCE_EAGER}" == "0" ]] \
