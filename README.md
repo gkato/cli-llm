@@ -407,7 +407,7 @@ The GLM path serves
 [`brandonmusic/GLM-5.3-Flash-tr3-4bpw`](https://huggingface.co/brandonmusic/GLM-5.3-Flash-tr3-4bpw),
 a roughly 164 GiB EXL3/TR3 quantization of the multimodal 320B/18B-active MoE.
 The lifecycle wraps [MiaAI-Lab's EXL3 dual-DGX-Spark recipe](https://github.com/MiaAI-Lab/GLM-5.3-Flash-EXL3-2x-DGX-Sparks)
-at pinned revision `1df71c1669489ae1f80f05a560732c598db8e615`, and pins the
+at pinned revision `0e2e78f3de83624e6733b918724da27fc9040156`, and pins the
 measured target snapshot `5ab363a8dcf6405955fd5f99671e01a1c9fb124b`.
 
 This replaces the previous NVFP4/Ray profile. It removes Ray and its object
@@ -423,6 +423,13 @@ without the previous 0.8847 CUDA-graph workaround. The updated overlay also
 fixes hybrid prefix-cache hits, keeps long peer prefills off active decode
 steps, persists Triton/TileLang caches, warms common shapes after health, and
 keeps client stop strings dormant until GLM exits its reasoning block.
+The newer upstream also carries XGrammar speculative-termination fixes and
+detects a dead worker rank in roughly 30 seconds instead of waiting for the
+full startup timeout. Its remeasured cold prefill is about 936 tok/s at 256K
+and 928 tok/s at 300K; raw decode settings and the immutable runtime image are
+unchanged. The profile conservatively retains CUDA-graph memory estimation;
+turning `CG_ESTIMATE=0` may recover roughly 2.6 GiB for KV capacity, but is not
+a decode-speed optimization and requires on-kit validation.
 
 The runtime image is pulled by immutable GHCR digest and shipped to the worker.
 The adapter runs MiaAI's GPU self-check on both Sparks, uses the upstream worker-

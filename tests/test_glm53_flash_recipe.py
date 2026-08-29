@@ -52,6 +52,7 @@ class GLM53FlashRecipeTests(unittest.TestCase):
         self.assertEqual(profile["VLLM_EXECUTE_MODEL_TIMEOUT_SECONDS"], "1800")
         self.assertEqual(profile["GLM53_BOOT_SHAPE_WARMUP"], "1")
         self.assertEqual(profile["GLM53_WARMUP_REQ_TIMEOUT"], "240")
+        self.assertEqual(profile["CG_ESTIMATE"], "1")
         self.assertEqual(profile["SKIP_MM_PROFILING"], "1")
         self.assertEqual(profile["SPEC_METHOD"], "dflash")
         self.assertEqual(profile["DFLASH_SPECULATIVE_TOKENS"], "7")
@@ -60,7 +61,7 @@ class GLM53FlashRecipeTests(unittest.TestCase):
         self.assertEqual(profile["USE_HOST_NCCL"], "0")
         self.assertEqual(
             profile["VLLM_IMAGE"],
-            "ml-compute/glm53-flash-exl3:mp-dflash2-v2-1df71c1",
+            "ml-compute/glm53-flash-exl3:mp-dflash2-v3-0e2e78f",
         )
         self.assertIn("@sha256:", profile["VLLM_SOURCE_IMAGE"])
         self.assertIn("@sha256:", profile["VLLM_BASE_IMAGE"])
@@ -91,7 +92,7 @@ class GLM53FlashRecipeTests(unittest.TestCase):
         self.assertTrue(model["verified_on_gb10"])
         self.assertEqual(
             model["upstream_revision"],
-            "1df71c1669489ae1f80f05a560732c598db8e615",
+            "0e2e78f3de83624e6733b918724da27fc9040156",
         )
         self.assertEqual(
             model["model_revision"],
@@ -99,17 +100,20 @@ class GLM53FlashRecipeTests(unittest.TestCase):
         )
         self.assertEqual(
             model["runtime_image"],
-            "ml-compute/glm53-flash-exl3:mp-dflash2-v2-1df71c1",
+            "ml-compute/glm53-flash-exl3:mp-dflash2-v3-0e2e78f",
         )
         self.assertIn("@sha256:", model["runtime_source_image"])
         self.assertEqual(
             model["runtime_kernel_patch"],
-            "exl3-sm121-dflash2-slotshare-apc-overlay",
+            "exl3-sm121-dflash2-slotshare-apc-xgrammar-overlay",
         )
         self.assertEqual(model["dflash_kv_slot_sharing"], "padded_mla")
         self.assertEqual(model["mixed_prefill_policy"], "skip")
         self.assertTrue(model["boot_shape_warmup"])
         self.assertTrue(model["suppress_stops_during_reasoning"])
+        self.assertTrue(model["cuda_graph_estimate_deduction"])
+        self.assertTrue(model["xgrammar_speculative_termination_patch"])
+        self.assertTrue(model["worker_startup_fail_fast"])
         self.assertEqual(model["speculative_method"], "dflash")
         self.assertEqual(model["speculative_tokens"], 7)
         self.assertEqual(model["speculative_draft_tensor_parallel_size"], 1)
@@ -121,7 +125,7 @@ class GLM53FlashRecipeTests(unittest.TestCase):
         script = SCRIPT.read_text(encoding="utf-8")
 
         self.assertIn(
-            'UPSTREAM_REVISION_DEFAULT="1df71c1669489ae1f80f05a560732c598db8e615"',
+            'UPSTREAM_REVISION_DEFAULT="0e2e78f3de83624e6733b918724da27fc9040156"',
             script,
         )
         self.assertIn(
@@ -142,6 +146,8 @@ class GLM53FlashRecipeTests(unittest.TestCase):
         self.assertIn("VLLM_EXECUTE_MODEL_TIMEOUT_SECONDS", script)
         self.assertIn("GLM53_BOOT_SHAPE_WARMUP", script)
         self.assertIn("GLM53_WARMUP_REQ_TIMEOUT", script)
+        self.assertIn("CG_ESTIMATE", script)
+        self.assertIn("printf 'VLLM_API_KEY=\\n'", script)
         self.assertIn("Retagging the matching immutable image", script)
         self.assertIn("materialize_upstream_launcher", script)
         self.assertIn("resolve_cluster_interfaces", script)

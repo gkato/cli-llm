@@ -22,14 +22,14 @@ RECIPE_DIR_DEFAULT="${RUNTIME_DIR_DEFAULT}/miaai-exl3-dual-spark"
 PROJECT_ENV_FILE_DEFAULT="${PROJECT_ROOT}/.env.local"
 
 UPSTREAM_REPO_DEFAULT="https://github.com/MiaAI-Lab/GLM-5.3-Flash-EXL3-2x-DGX-Sparks.git"
-UPSTREAM_REVISION_DEFAULT="1df71c1669489ae1f80f05a560732c598db8e615"
+UPSTREAM_REVISION_DEFAULT="0e2e78f3de83624e6733b918724da27fc9040156"
 MODEL_ID_DEFAULT="brandonmusic/GLM-5.3-Flash-tr3-4bpw"
 MODEL_REVISION_DEFAULT="5ab363a8dcf6405955fd5f99671e01a1c9fb124b"
 DFLASH_MODEL_ID_DEFAULT="incoai/GLM-5.3-Flash-DFlash2"
 DFLASH_MODEL_REVISION_DEFAULT="7d74cdd881ed7e32c31175984a67823127b66cfe"
 VLLM_BASE_IMAGE_DEFAULT="vllm/vllm-openai:glm53-flash-arm64-cu130@sha256:905c02933be6021301db2dc284e24e3727467aa3a0f63b41d609885778a07bce"
 VLLM_SOURCE_IMAGE_DEFAULT="ghcr.io/miaai-lab/glm-5.3-flash-2x-dgx-sparks@sha256:9bb1557a4234fce63d59599e44d10747eabd742beb337eebf9e7070be8a0fd58"
-VLLM_IMAGE_DEFAULT="ml-compute/glm53-flash-exl3:mp-dflash2-v2-1df71c1"
+VLLM_IMAGE_DEFAULT="ml-compute/glm53-flash-exl3:mp-dflash2-v3-0e2e78f"
 
 PROFILE_FILE="${GLM53_DSPARK_CONFIG_FILE:-${PROFILE_FILE_DEFAULT}}"
 RUNTIME_DIR="${GLM53_DSPARK_RUNTIME_DIR:-${RUNTIME_DIR_DEFAULT}}"
@@ -180,6 +180,7 @@ GLM53_MIXED_PREFILL_CHUNK|skip
 VLLM_EXECUTE_MODEL_TIMEOUT_SECONDS|1800
 GLM53_BOOT_SHAPE_WARMUP|1
 GLM53_WARMUP_REQ_TIMEOUT|240
+CG_ESTIMATE|1
 USE_HOST_NCCL|0
 NCCL_HOST_DIR|
 WORKER_NCCL_HOST_DIR|
@@ -262,6 +263,7 @@ GLM53_MIXED_PREFILL_CHUNK
 VLLM_EXECUTE_MODEL_TIMEOUT_SECONDS
 GLM53_BOOT_SHAPE_WARMUP
 GLM53_WARMUP_REQ_TIMEOUT
+CG_ESTIMATE
 USE_HOST_NCCL
 NCCL_HOST_DIR
 WORKER_NCCL_HOST_DIR
@@ -325,6 +327,8 @@ validate_profile() {
     || die "GLM53_BOOT_SHAPE_WARMUP must remain enabled"
   (( GLM53_WARMUP_REQ_TIMEOUT > 0 )) \
     || die "GLM53_WARMUP_REQ_TIMEOUT must be positive"
+  [[ "${CG_ESTIMATE}" == "0" || "${CG_ESTIMATE}" == "1" ]] \
+    || die "CG_ESTIMATE must be 0 or 1"
   [[ "${LANGUAGE_MODEL_ONLY}" == "0" || "${LANGUAGE_MODEL_ONLY}" == "1" ]] \
     || die "LANGUAGE_MODEL_ONLY must be 0 or 1"
   [[ "${LIMIT_MM}" == '{"image":4,"video":1}' ]] \
@@ -690,6 +694,9 @@ write_upstream_env() {
     printf 'HF_HOME=%s\n' "${HF_HOME}"
     printf 'IMAGE=%s\n' "${VLLM_IMAGE}"
     printf 'PORT=%s\n' "${PORT}"
+    # Raw vLLM remains private and unauthenticated. ml-compute's proxy owns
+    # public API-key enforcement; clear an inherited upstream API key here.
+    printf 'VLLM_API_KEY=\n'
     printf 'HOST_BIND=%s\n' "${HOST_BIND}"
     printf 'TP=%s\n' "${TENSOR_PARALLEL_SIZE}"
     printf 'NNODES=%s\n' "${NUM_NODES}"
@@ -728,6 +735,7 @@ write_upstream_env() {
     printf 'VLLM_EXECUTE_MODEL_TIMEOUT_SECONDS=%s\n' "${VLLM_EXECUTE_MODEL_TIMEOUT_SECONDS}"
     printf 'GLM53_BOOT_SHAPE_WARMUP=%s\n' "${GLM53_BOOT_SHAPE_WARMUP}"
     printf 'GLM53_WARMUP_REQ_TIMEOUT=%s\n' "${GLM53_WARMUP_REQ_TIMEOUT}"
+    printf 'CG_ESTIMATE=%s\n' "${CG_ESTIMATE}"
     printf 'CONTAINER_HEAD=%s\n' "${GLM53_HEAD_CONTAINER}"
     printf 'CONTAINER_WORKER=%s\n' "${GLM53_WORKER_CONTAINER}"
     printf 'EXTRA_ARGS=%q\n' "${EXTRA_ARGS}"
