@@ -59,6 +59,8 @@ class GLM53FlashRecipeTests(unittest.TestCase):
         self.assertEqual(profile["DFLASH_DRAFT_TP"], "1")
         self.assertEqual(profile["MTP_SPECULATIVE_TOKENS"], "2")
         self.assertEqual(profile["USE_HOST_NCCL"], "0")
+        self.assertEqual(profile["WORKER_CX7_IF"], "enp1s0f1np1")
+        self.assertEqual(profile["WORKER_CX7_IB"], "rocep1s0f1")
         self.assertEqual(
             profile["VLLM_IMAGE"],
             "ml-compute/glm53-flash-exl3:mp-dflash2-v3-0e2e78f",
@@ -114,6 +116,10 @@ class GLM53FlashRecipeTests(unittest.TestCase):
         self.assertTrue(model["cuda_graph_estimate_deduction"])
         self.assertTrue(model["xgrammar_speculative_termination_patch"])
         self.assertTrue(model["worker_startup_fail_fast"])
+        self.assertEqual(
+            model["worker_cuda_device_passthrough"],
+            "explicit_nonprivileged",
+        )
         self.assertEqual(model["speculative_method"], "dflash")
         self.assertEqual(model["speculative_tokens"], 7)
         self.assertEqual(model["speculative_draft_tensor_parallel_size"], 1)
@@ -148,6 +154,9 @@ class GLM53FlashRecipeTests(unittest.TestCase):
         self.assertIn("GLM53_WARMUP_REQ_TIMEOUT", script)
         self.assertIn("CG_ESTIMATE", script)
         self.assertIn("printf 'VLLM_API_KEY=\\n'", script)
+        self.assertIn("--runtime=nvidia --device=/dev/nvidia0", script)
+        self.assertIn("worker_devices != 1", script)
+        self.assertIn("--device=/dev/nvidia-uvm-tools", script)
         self.assertIn("Retagging the matching immutable image", script)
         self.assertIn("materialize_upstream_launcher", script)
         self.assertIn("resolve_cluster_interfaces", script)

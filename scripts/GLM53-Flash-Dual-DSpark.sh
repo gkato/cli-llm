@@ -663,6 +663,10 @@ check_host() {
     || die "NVIDIA GB10 was not detected on the head"
   wrun "test \"\$(uname -m)\" = aarch64" || die "Worker is not aarch64"
   worker_docker info >/dev/null 2>&1 || die "Docker daemon is unavailable on the worker"
+  worker_docker info --format '{{json .Runtimes}}' | grep -q '"nvidia"' \
+    || die "Worker Docker is missing the nvidia runtime; run: sudo nvidia-ctk runtime configure --runtime=docker"
+  wrun "test -c /dev/nvidia0 && test -c /dev/nvidiactl && test -c /dev/nvidia-uvm && test -c /dev/nvidia-uvm-tools" \
+    || die "Worker is missing one or more required NVIDIA device nodes"
   wrun "nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | grep -q GB10" \
     || die "NVIDIA GB10 was not detected on the worker"
   resolve_cluster_interfaces
@@ -810,10 +814,19 @@ ensure_image() {
 gpu_check() {
   ensure_image
   local -a probe=(--rm --gpus all -e EXL3_SELFCHECK_GPU=1 --entrypoint python3 "${VLLM_IMAGE}" /opt/glm53/test_exl3_overlay.py)
+  local -a worker_probe=(
+    --rm --runtime=nvidia --gpus all
+    --device=/dev/nvidia0
+    --device=/dev/nvidiactl
+    --device=/dev/nvidia-uvm
+    --device=/dev/nvidia-uvm-tools
+    -e EXL3_SELFCHECK_GPU=1
+    --entrypoint python3 "${VLLM_IMAGE}" /opt/glm53/test_exl3_overlay.py
+  )
   log "Running EXL3/SM121/DFlash2 GPU self-check on the head"
   docker run "${probe[@]}"
   log "Running EXL3/SM121/DFlash2 GPU self-check on the worker"
-  worker_docker run "${probe[@]}"
+  worker_docker run "${worker_probe[@]}"
 }
 
 download_snapshot() {
@@ -892,7 +905,19 @@ materialize_upstream_launcher() {
     || die "Pinned upstream chat template is missing"
   tmp="$(mktemp "${RECIPE_DIR}/.ml-compute-start.XXXXXX")"
   if ! awk '
-    BEGIN { host = 0; endpoint = 0 }
+    BEGIN { host = 0; endpoint = 0; worker_run = 0; worker_devices = 0 }
+    /worker_ssh "docker run -d --name/ {
+      worker_run = 1
+      print
+      next
+    }
+    worker_run && /^[[:space:]]+--gpus all --network host/ {
+      print
+      print "        --runtime=nvidia --device=/dev/nvidia0 --device=/dev/nvidiactl --device=/dev/nvidia-uvm --device=/dev/nvidia-uvm-tools \\"
+      worker_devices++
+      worker_run = 0
+      next
+    }
     /^[[:space:]]+--host 0\.0\.0\.0$/ {
       print "    --host \"${HOST_BIND:-127.0.0.1}\""
       host++
@@ -904,7 +929,7 @@ materialize_upstream_launcher() {
       next
     }
     { print }
-    END { if (host != 2 || endpoint != 1) exit 42 }
+    END { if (host != 2 || endpoint != 1 || worker_devices != 1) exit 42 }
   ' "${source}" >"${tmp}"; then
     rm -f "${tmp}"
     die "Pinned MiaAI launcher no longer matches the reviewed loopback patch"
