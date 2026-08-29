@@ -407,19 +407,22 @@ The GLM path serves
 [`brandonmusic/GLM-5.3-Flash-tr3-4bpw`](https://huggingface.co/brandonmusic/GLM-5.3-Flash-tr3-4bpw),
 a roughly 164 GiB EXL3/TR3 quantization of the multimodal 320B/18B-active MoE.
 The lifecycle wraps [MiaAI-Lab's EXL3 dual-DGX-Spark recipe](https://github.com/MiaAI-Lab/GLM-5.3-Flash-EXL3-2x-DGX-Sparks)
-at pinned revision `66e2643d612adb2dced7da230ce52b96fe7f82cc`, and pins the
+at pinned revision `1df71c1669489ae1f80f05a560732c598db8e615`, and pins the
 measured target snapshot `5ab363a8dcf6405955fd5f99671e01a1c9fb124b`.
 
 This replaces the previous NVFP4/Ray profile. It removes Ray and its object
 stores, joins one vLLM multiprocessing rank per Spark directly at TP=2, uses
 the fused EXL3 MoE path and CUDA graphs, and raises the reviewed request ceiling
-from 256K to 900K. The measured default adds
+from 256K to 1M. The measured default adds
 [`incoai/GLM-5.3-Flash-DFlash2`](https://huggingface.co/incoai/GLM-5.3-Flash-DFlash2)
 with seven speculative tokens and a rank-0-only draft. The conservative launch
-shape remains four sequences, 1K prefill chunks, 0.8847 memory utilization, FP8
+shape remains four sequences, 1K prefill chunks, 0.87 memory utilization, FP8
 MLA KV, prefix caching, and skipped maximum-size multimodal dummy profiling.
-The 0.8847 value is vLLM v0.21's reported CUDA-graph-adjusted equivalent of the
-upstream 0.87 budget and retains enough KV for one complete 900K request.
+Padded DFlash2 pages now share the MLA allocation, allowing the 1M profile
+without the previous 0.8847 CUDA-graph workaround. The updated overlay also
+fixes hybrid prefix-cache hits, keeps long peer prefills off active decode
+steps, persists Triton/TileLang caches, warms common shapes after health, and
+keeps client stop strings dormant until GLM exits its reasoning block.
 
 The runtime image is pulled by immutable GHCR digest and shipped to the worker.
 The adapter runs MiaAI's GPU self-check on both Sparks, uses the upstream worker-
@@ -585,7 +588,7 @@ No code changes — register a model with provider `openai`, the base URL above,
 | Want NVIDIA-tuned TensorRT-LLM kernels and NVFP4 on Blackwell | **NIM** |
 | DeepSeek V4 Flash 0731 across two linked GB10 nodes | **DSpark cluster** |
 | Qwen3.8 Flash Next NVFP4 at 1M across two linked GB10 nodes | **Qwen Flash Next** |
-| GLM-5.3 Flash EXL3 + DFlash2 at 900K across two linked GB10 nodes | **GLM Flash** |
+| GLM-5.3 Flash EXL3 + DFlash2 at 1M across two linked GB10 nodes | **GLM Flash** |
 | DeepSeek V4 Flash 0731 on one dedicated GB10 at 384K | **DSpark One** |
 | Fine-tuning | none — stop the server, run `Makefile.gb10` |
 
@@ -626,7 +629,7 @@ tuning. A representative slice of what's registered:
 | `gemma4-31b-it-fp8` | 31B via runtime FP8 quant — GB10-sized |
 | `qwen2.5-coder-32b` (llama.cpp) | Q8_0 GGUF with `--jinja` — real tool calling for agentic coders |
 | `qwen3.8-flash-next-nvfp4-dspark` | Dual-Spark SGLang TP2, SM121 QSA + NVFP4-KV patch, 1M YaRN profile |
-| `glm-5.3-flash-nvfp4-dspark` | Legacy key for dual-Spark EXL3/MP TP2 + DFlash2, 900K profile |
+| `glm-5.3-flash-nvfp4-dspark` | Legacy key for dual-Spark EXL3/MP TP2 + DFlash2, 1M profile |
 | `deepseek-v4-flash-0731-dspark-one` | One-Spark TP=1 EXL3 recipe, 384K single-request profile |
 
 Adding an entry:
@@ -1045,7 +1048,7 @@ ml-compute/
 ├── config/
 │   ├── dspark-spark4e89-thinkstationpgx.env   dual-Spark DeepSeek profile
 │   ├── dspark-qwen38-flash-next-nvfp4.env     dual-Spark Qwen 1M NVFP4-KV profile
-│   ├── dspark-glm53-flash-nvfp4.env            dual-Spark GLM EXL3 900K profile (legacy name)
+│   ├── dspark-glm53-flash-nvfp4.env            dual-Spark GLM EXL3 1M profile (legacy name)
 │   └── dspark-one-deepseek-v4-flash-0731.env  one-Spark 384K profile
 ├── Makefile.gb10               LoRA fine-tuning on DGX Spark (bf16, HF+PEFT+TRL)
 ├── Makefile.distill            Distillation data pipeline (+ x86 QLoRA train)
