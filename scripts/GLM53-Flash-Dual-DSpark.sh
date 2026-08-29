@@ -22,14 +22,14 @@ RECIPE_DIR_DEFAULT="${RUNTIME_DIR_DEFAULT}/miaai-exl3-dual-spark"
 PROJECT_ENV_FILE_DEFAULT="${PROJECT_ROOT}/.env.local"
 
 UPSTREAM_REPO_DEFAULT="https://github.com/MiaAI-Lab/GLM-5.3-Flash-EXL3-2x-DGX-Sparks.git"
-UPSTREAM_REVISION_DEFAULT="66e2643d612adb2dced7da230ce52b96fe7f82cc"
+UPSTREAM_REVISION_DEFAULT="1df71c1669489ae1f80f05a560732c598db8e615"
 MODEL_ID_DEFAULT="brandonmusic/GLM-5.3-Flash-tr3-4bpw"
 MODEL_REVISION_DEFAULT="5ab363a8dcf6405955fd5f99671e01a1c9fb124b"
 DFLASH_MODEL_ID_DEFAULT="incoai/GLM-5.3-Flash-DFlash2"
 DFLASH_MODEL_REVISION_DEFAULT="7d74cdd881ed7e32c31175984a67823127b66cfe"
 VLLM_BASE_IMAGE_DEFAULT="vllm/vllm-openai:glm53-flash-arm64-cu130@sha256:905c02933be6021301db2dc284e24e3727467aa3a0f63b41d609885778a07bce"
 VLLM_SOURCE_IMAGE_DEFAULT="ghcr.io/miaai-lab/glm-5.3-flash-2x-dgx-sparks@sha256:9bb1557a4234fce63d59599e44d10747eabd742beb337eebf9e7070be8a0fd58"
-VLLM_IMAGE_DEFAULT="ml-compute/glm53-flash-exl3:mp-dflash2-v1-66e2643"
+VLLM_IMAGE_DEFAULT="ml-compute/glm53-flash-exl3:mp-dflash2-v2-1df71c1"
 
 PROFILE_FILE="${GLM53_DSPARK_CONFIG_FILE:-${PROFILE_FILE_DEFAULT}}"
 RUNTIME_DIR="${GLM53_DSPARK_RUNTIME_DIR:-${RUNTIME_DIR_DEFAULT}}"
@@ -81,7 +81,9 @@ Reviewed MiaAI profile:
   - fused EXL3/TR3 K4 routed experts with native SM121 cubins
   - direct vLLM multiprocessing executor, two nodes, TP=2
   - DFlash2 k=7 on draft TP=1; MTP k=2 remains the rollback mode
-  - 900K context, 4 sequences, 1024-token prefill chunks, FP8 MLA KV
+  - 1M context, 4 sequences, 1024-token prefill chunks, FP8 MLA KV
+  - padded DFlash2/MLA KV slot-sharing and corrected hybrid prefix hits
+  - persistent JIT caches, post-health shape warmup, protected active decode
   - CUDA graphs, prefix caching, image/video, glm47 tools, glm45 reasoning
   - raw unauthenticated API on 127.0.0.1:8888 only
   - authenticated allow-list proxy on 0.0.0.0:8000
@@ -148,10 +150,10 @@ TENSOR_PARALLEL_SIZE|2
 NUM_NODES|2
 DISTRIBUTED_EXECUTOR_BACKEND|mp
 QUANTIZATION|exl3
-MAX_MODEL_LEN|900000
+MAX_MODEL_LEN|1000000
 MAX_NUM_SEQS|4
 MAX_NUM_BATCHED_TOKENS|1024
-GPU_MEMORY_UTILIZATION|0.8847
+GPU_MEMORY_UTILIZATION|0.87
 KV_CACHE_DTYPE|fp8
 ENFORCE_EAGER|0
 EXL3_FUSED_MOE|1
@@ -173,6 +175,11 @@ DOWNLOAD_MODE|rsync
 VLLM_ENGINE_READY_TIMEOUT_S|3600
 CACHE_ROOT|${RUNTIME_DIR}/cache/vllm
 WORKER_VLLM_CACHE|
+GLM53_SUPPRESS_STOPS_IN_REASONING|1
+GLM53_MIXED_PREFILL_CHUNK|skip
+VLLM_EXECUTE_MODEL_TIMEOUT_SECONDS|1800
+GLM53_BOOT_SHAPE_WARMUP|1
+GLM53_WARMUP_REQ_TIMEOUT|240
 USE_HOST_NCCL|0
 NCCL_HOST_DIR|
 WORKER_NCCL_HOST_DIR|
@@ -250,6 +257,11 @@ DOWNLOAD_MODE
 VLLM_ENGINE_READY_TIMEOUT_S
 CACHE_ROOT
 WORKER_VLLM_CACHE
+GLM53_SUPPRESS_STOPS_IN_REASONING
+GLM53_MIXED_PREFILL_CHUNK
+VLLM_EXECUTE_MODEL_TIMEOUT_SECONDS
+GLM53_BOOT_SHAPE_WARMUP
+GLM53_WARMUP_REQ_TIMEOUT
 USE_HOST_NCCL
 NCCL_HOST_DIR
 WORKER_NCCL_HOST_DIR
@@ -273,14 +285,14 @@ validate_profile() {
     || die "DISTRIBUTED_EXECUTOR_BACKEND must remain mp"
   [[ "${QUANTIZATION}" == "exl3" ]] \
     || die "QUANTIZATION must remain exl3 for the packed TR3 checkpoint"
-  (( MAX_MODEL_LEN > 0 && MAX_MODEL_LEN <= 900000 )) \
-    || die "MAX_MODEL_LEN must be between 1 and MiaAI's reviewed 900000"
+  (( MAX_MODEL_LEN > 0 && MAX_MODEL_LEN <= 1000000 )) \
+    || die "MAX_MODEL_LEN must be between 1 and MiaAI's reviewed 1000000"
   (( MAX_NUM_SEQS > 0 && MAX_NUM_SEQS <= 4 )) \
     || die "MAX_NUM_SEQS must be between 1 and MiaAI's reviewed value 4"
   (( MAX_NUM_BATCHED_TOKENS > 0 && MAX_NUM_BATCHED_TOKENS <= 1024 )) \
     || die "MAX_NUM_BATCHED_TOKENS above 1024 can exhaust the GB10 indexer on long prefill"
-  awk -v value="${GPU_MEMORY_UTILIZATION}" 'BEGIN {exit !(value > 0 && value <= 0.8847)}' \
-    || die "GPU_MEMORY_UTILIZATION must not exceed the CUDA-graph-adjusted 0.8847"
+  awk -v value="${GPU_MEMORY_UTILIZATION}" 'BEGIN {exit !(value > 0 && value <= 0.87)}' \
+    || die "GPU_MEMORY_UTILIZATION must not exceed MiaAI's padded-slot-share profile value 0.87"
   [[ "${KV_CACHE_DTYPE}" == "fp8" ]] \
     || die "KV_CACHE_DTYPE must remain fp8 for packed fp8_ds_mla"
   [[ "${ENFORCE_EAGER}" == "0" ]] \
@@ -303,6 +315,16 @@ validate_profile() {
     || die "MTP_SPECULATIVE_TOKENS must be between 0 and MiaAI's rollback value 2"
   [[ "${SKIP_MM_PROFILING}" == "1" ]] \
     || die "SKIP_MM_PROFILING must remain enabled; the maximum MM dummy profile OOMs UMA"
+  [[ "${GLM53_SUPPRESS_STOPS_IN_REASONING}" == "1" ]] \
+    || die "GLM53_SUPPRESS_STOPS_IN_REASONING must remain enabled to avoid mid-reasoning truncation"
+  [[ "${GLM53_MIXED_PREFILL_CHUNK}" == "skip" ]] \
+    || die "GLM53_MIXED_PREFILL_CHUNK must remain skip to protect active decode"
+  (( VLLM_EXECUTE_MODEL_TIMEOUT_SECONDS >= 600 )) \
+    || die "VLLM_EXECUTE_MODEL_TIMEOUT_SECONDS must be at least 600 for cold TP=2 JIT"
+  [[ "${GLM53_BOOT_SHAPE_WARMUP}" == "1" ]] \
+    || die "GLM53_BOOT_SHAPE_WARMUP must remain enabled"
+  (( GLM53_WARMUP_REQ_TIMEOUT > 0 )) \
+    || die "GLM53_WARMUP_REQ_TIMEOUT must be positive"
   [[ "${LANGUAGE_MODEL_ONLY}" == "0" || "${LANGUAGE_MODEL_ONLY}" == "1" ]] \
     || die "LANGUAGE_MODEL_ONLY must be 0 or 1"
   [[ "${LIMIT_MM}" == '{"image":4,"video":1}' ]] \
@@ -664,6 +686,7 @@ write_upstream_env() {
     printf 'HEAD_CX7_IB=%s\n' "${HEAD_CX7_IB}"
     printf 'WORKER_CX7_IB=%s\n' "${WORKER_CX7_IB}"
     printf 'MODEL=%s\n' "${MODEL_ID}"
+    printf 'MODEL_REVISION=%s\n' "${MODEL_REVISION}"
     printf 'HF_HOME=%s\n' "${HF_HOME}"
     printf 'IMAGE=%s\n' "${VLLM_IMAGE}"
     printf 'PORT=%s\n' "${PORT}"
@@ -700,6 +723,11 @@ write_upstream_env() {
     printf 'READY_TIMEOUT=%s\n' "${VLLM_ENGINE_READY_TIMEOUT_S}"
     printf 'CACHE_ROOT=%s\n' "${CACHE_ROOT}"
     printf 'WORKER_VLLM_CACHE=%s\n' "$(worker_vllm_cache)"
+    printf 'GLM53_SUPPRESS_STOPS_IN_REASONING=%s\n' "${GLM53_SUPPRESS_STOPS_IN_REASONING}"
+    printf 'GLM53_MIXED_PREFILL_CHUNK=%s\n' "${GLM53_MIXED_PREFILL_CHUNK}"
+    printf 'VLLM_EXECUTE_MODEL_TIMEOUT_SECONDS=%s\n' "${VLLM_EXECUTE_MODEL_TIMEOUT_SECONDS}"
+    printf 'GLM53_BOOT_SHAPE_WARMUP=%s\n' "${GLM53_BOOT_SHAPE_WARMUP}"
+    printf 'GLM53_WARMUP_REQ_TIMEOUT=%s\n' "${GLM53_WARMUP_REQ_TIMEOUT}"
     printf 'CONTAINER_HEAD=%s\n' "${GLM53_HEAD_CONTAINER}"
     printf 'CONTAINER_WORKER=%s\n' "${GLM53_WORKER_CONTAINER}"
     printf 'EXTRA_ARGS=%q\n' "${EXTRA_ARGS}"
@@ -758,7 +786,12 @@ ensure_image() {
     || die "Local runtime tag does not resolve to the pinned OCI digest"
   worker_id="$(worker_image_id "${VLLM_IMAGE}")"
   if [[ "${worker_id}" != "${local_id}" ]]; then
-    ship_image_to_worker
+    if worker_docker image ls --no-trunc --quiet | grep -Fxq "${local_id}"; then
+      log "Retagging the matching immutable image already present on the worker"
+      worker_docker tag "${local_id}" "${VLLM_IMAGE}"
+    else
+      ship_image_to_worker
+    fi
     worker_id="$(worker_image_id "${VLLM_IMAGE}")"
   fi
   [[ "${worker_id}" == "${local_id}" ]] \
