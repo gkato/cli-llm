@@ -980,6 +980,7 @@ models:
     suppress_stops_during_reasoning: true
     xgrammar_speculative_termination_patch: true
     worker_startup_fail_fast: true
+    worker_cuda_device_passthrough: explicit_nonprivileged
     speculative_method: dflash
     speculative_tokens: 7
     speculative_draft_model: incoai/GLM-5.3-Flash-DFlash2

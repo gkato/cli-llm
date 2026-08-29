@@ -430,6 +430,9 @@ and 928 tok/s at 300K; raw decode settings and the immutable runtime image are
 unchanged. The profile conservatively retains CUDA-graph memory estimation;
 turning `CG_ESTIMATE=0` may recover roughly 2.6 GiB for KV capacity, but is not
 a decode-speed optimization and requires on-kit validation.
+On workers whose Docker/systemd device cgroup rejects CUDA initialization, the
+adapter grants only the four required NVIDIA character devices and selects the
+registered `nvidia` runtime; it does not run the service privileged.
 
 The runtime image is pulled by immutable GHCR digest and shipped to the worker.
 The adapter runs MiaAI's GPU self-check on both Sparks, uses the upstream worker-
