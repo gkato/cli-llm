@@ -41,7 +41,7 @@ class GLM53FlashRecipeTests(unittest.TestCase):
         self.assertEqual(profile["QUANTIZATION"], "exl3")
         self.assertEqual(profile["MAX_MODEL_LEN"], "1000000")
         self.assertEqual(profile["MAX_NUM_SEQS"], "4")
-        self.assertEqual(profile["MAX_NUM_BATCHED_TOKENS"], "1024")
+        self.assertEqual(profile["MAX_NUM_BATCHED_TOKENS"], "2048")
         self.assertEqual(profile["GPU_MEMORY_UTILIZATION"], "0.87")
         self.assertEqual(profile["KV_CACHE_DTYPE"], "fp8")
         self.assertEqual(profile["ENFORCE_EAGER"], "0")
@@ -56,14 +56,18 @@ class GLM53FlashRecipeTests(unittest.TestCase):
         self.assertEqual(profile["SKIP_MM_PROFILING"], "1")
         self.assertEqual(profile["SPEC_METHOD"], "dflash")
         self.assertEqual(profile["DFLASH_SPECULATIVE_TOKENS"], "7")
-        self.assertEqual(profile["DFLASH_DRAFT_TP"], "1")
+        self.assertEqual(profile["DFLASH_DRAFT_TP"], "2")
+        self.assertEqual(profile["ABLIT"], "0")
         self.assertEqual(profile["MTP_SPECULATIVE_TOKENS"], "2")
         self.assertEqual(profile["USE_HOST_NCCL"], "0")
         self.assertEqual(profile["WORKER_CX7_IF"], "enp1s0f1np1")
         self.assertEqual(profile["WORKER_CX7_IB"], "rocep1s0f1")
+        self.assertEqual(profile["NCCL_IB_GID_INDEX"], "3")
+        self.assertEqual(profile["HEAD_GID"], "")
+        self.assertEqual(profile["WORKER_GID"], "")
         self.assertEqual(
             profile["VLLM_IMAGE"],
-            "ml-compute/glm53-flash-exl3:mp-dflash2-v3-0e2e78f",
+            "ml-compute/glm53-flash-exl3:mp-dflash2-v4-b5ab809",
         )
         self.assertIn("@sha256:", profile["VLLM_SOURCE_IMAGE"])
         self.assertIn("@sha256:", profile["VLLM_BASE_IMAGE"])
@@ -83,7 +87,7 @@ class GLM53FlashRecipeTests(unittest.TestCase):
         self.assertEqual(model["hf_id"], "brandonmusic/GLM-5.3-Flash-tr3-4bpw")
         self.assertEqual(model["max_model_len"], 1000000)
         self.assertEqual(model["max_num_seqs"], 4)
-        self.assertEqual(model["max_num_batched_tokens"], 1024)
+        self.assertEqual(model["max_num_batched_tokens"], 2048)
         self.assertEqual(model["checkpoint_size_gib"], 164)
         self.assertEqual(model["gpu_memory_utilization"], 0.87)
         self.assertEqual(model["quantization"], "exl3")
@@ -94,7 +98,7 @@ class GLM53FlashRecipeTests(unittest.TestCase):
         self.assertTrue(model["verified_on_gb10"])
         self.assertEqual(
             model["upstream_revision"],
-            "0e2e78f3de83624e6733b918724da27fc9040156",
+            "b5ab8091dec88e324c943deb96c2dfd957db9f36",
         )
         self.assertEqual(
             model["model_revision"],
@@ -102,12 +106,12 @@ class GLM53FlashRecipeTests(unittest.TestCase):
         )
         self.assertEqual(
             model["runtime_image"],
-            "ml-compute/glm53-flash-exl3:mp-dflash2-v3-0e2e78f",
+            "ml-compute/glm53-flash-exl3:mp-dflash2-v4-b5ab809",
         )
         self.assertIn("@sha256:", model["runtime_source_image"])
         self.assertEqual(
             model["runtime_kernel_patch"],
-            "exl3-sm121-dflash2-slotshare-apc-xgrammar-overlay",
+            "exl3-sm121-dflash2-slotshare-apc-xgrammar-kpool-overlay",
         )
         self.assertEqual(model["dflash_kv_slot_sharing"], "padded_mla")
         self.assertEqual(model["mixed_prefill_policy"], "skip")
@@ -115,6 +119,9 @@ class GLM53FlashRecipeTests(unittest.TestCase):
         self.assertTrue(model["suppress_stops_during_reasoning"])
         self.assertTrue(model["cuda_graph_estimate_deduction"])
         self.assertTrue(model["xgrammar_speculative_termination_patch"])
+        self.assertTrue(model["kpool_tail_slotmap_patch"])
+        self.assertTrue(model["per_rank_roce_gid"])
+        self.assertFalse(model["abliteration"])
         self.assertTrue(model["worker_startup_fail_fast"])
         self.assertEqual(
             model["worker_cuda_device_passthrough"],
@@ -122,7 +129,7 @@ class GLM53FlashRecipeTests(unittest.TestCase):
         )
         self.assertEqual(model["speculative_method"], "dflash")
         self.assertEqual(model["speculative_tokens"], 7)
-        self.assertEqual(model["speculative_draft_tensor_parallel_size"], 1)
+        self.assertEqual(model["speculative_draft_tensor_parallel_size"], 2)
         self.assertEqual(model["speculative_draft_license"], "CC-BY-NC-ND-4.0")
         self.assertEqual(model["commercial_speculative_method"], "mtp")
         self.assertIn("@sha256:", model["runtime_base_image"])
@@ -131,7 +138,7 @@ class GLM53FlashRecipeTests(unittest.TestCase):
         script = SCRIPT.read_text(encoding="utf-8")
 
         self.assertIn(
-            'UPSTREAM_REVISION_DEFAULT="0e2e78f3de83624e6733b918724da27fc9040156"',
+            'UPSTREAM_REVISION_DEFAULT="b5ab8091dec88e324c943deb96c2dfd957db9f36"',
             script,
         )
         self.assertIn(
@@ -153,6 +160,11 @@ class GLM53FlashRecipeTests(unittest.TestCase):
         self.assertIn("GLM53_BOOT_SHAPE_WARMUP", script)
         self.assertIn("GLM53_WARMUP_REQ_TIMEOUT", script)
         self.assertIn("CG_ESTIMATE", script)
+        self.assertIn('[[ "${ABLIT}" == "0" ]]', script)
+        self.assertIn("check_roce_gid_indices", script)
+        self.assertIn("HEAD_GID", script)
+        self.assertIn("WORKER_GID", script)
+        self.assertIn("patch_kpool_tail_slotmap.py", script)
         self.assertIn("printf 'VLLM_API_KEY=\\n'", script)
         self.assertIn("--runtime=nvidia --device=/dev/nvidia0", script)
         self.assertIn("worker_devices != 1", script)

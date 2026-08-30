@@ -22,14 +22,14 @@ RECIPE_DIR_DEFAULT="${RUNTIME_DIR_DEFAULT}/miaai-exl3-dual-spark"
 PROJECT_ENV_FILE_DEFAULT="${PROJECT_ROOT}/.env.local"
 
 UPSTREAM_REPO_DEFAULT="https://github.com/MiaAI-Lab/GLM-5.3-Flash-EXL3-2x-DGX-Sparks.git"
-UPSTREAM_REVISION_DEFAULT="0e2e78f3de83624e6733b918724da27fc9040156"
+UPSTREAM_REVISION_DEFAULT="b5ab8091dec88e324c943deb96c2dfd957db9f36"
 MODEL_ID_DEFAULT="brandonmusic/GLM-5.3-Flash-tr3-4bpw"
 MODEL_REVISION_DEFAULT="5ab363a8dcf6405955fd5f99671e01a1c9fb124b"
 DFLASH_MODEL_ID_DEFAULT="incoai/GLM-5.3-Flash-DFlash2"
 DFLASH_MODEL_REVISION_DEFAULT="7d74cdd881ed7e32c31175984a67823127b66cfe"
 VLLM_BASE_IMAGE_DEFAULT="vllm/vllm-openai:glm53-flash-arm64-cu130@sha256:905c02933be6021301db2dc284e24e3727467aa3a0f63b41d609885778a07bce"
 VLLM_SOURCE_IMAGE_DEFAULT="ghcr.io/miaai-lab/glm-5.3-flash-2x-dgx-sparks@sha256:9bb1557a4234fce63d59599e44d10747eabd742beb337eebf9e7070be8a0fd58"
-VLLM_IMAGE_DEFAULT="ml-compute/glm53-flash-exl3:mp-dflash2-v3-0e2e78f"
+VLLM_IMAGE_DEFAULT="ml-compute/glm53-flash-exl3:mp-dflash2-v4-b5ab809"
 
 PROFILE_FILE="${GLM53_DSPARK_CONFIG_FILE:-${PROFILE_FILE_DEFAULT}}"
 RUNTIME_DIR="${GLM53_DSPARK_RUNTIME_DIR:-${RUNTIME_DIR_DEFAULT}}"
@@ -80,9 +80,10 @@ Actions:
 Reviewed MiaAI profile:
   - fused EXL3/TR3 K4 routed experts with native SM121 cubins
   - direct vLLM multiprocessing executor, two nodes, TP=2
-  - DFlash2 k=7 on draft TP=1; MTP k=2 remains the rollback mode
-  - 1M context, 4 sequences, 1024-token prefill chunks, FP8 MLA KV
+  - DFlash2 k=7 on draft TP=2; MTP k=2 remains the rollback mode
+  - 1M context, 4 sequences, 2048-token prefill chunks, FP8 MLA KV
   - padded DFlash2/MLA KV slot-sharing and corrected hybrid prefix hits
+  - bounded K-pool tail slot mapping for safe long generations
   - persistent JIT caches, post-health shape warmup, protected active decode
   - CUDA graphs, prefix caching, image/video, glm47 tools, glm45 reasoning
   - raw unauthenticated API on 127.0.0.1:8888 only
@@ -152,7 +153,7 @@ DISTRIBUTED_EXECUTOR_BACKEND|mp
 QUANTIZATION|exl3
 MAX_MODEL_LEN|1000000
 MAX_NUM_SEQS|4
-MAX_NUM_BATCHED_TOKENS|1024
+MAX_NUM_BATCHED_TOKENS|2048
 GPU_MEMORY_UTILIZATION|0.87
 KV_CACHE_DTYPE|fp8
 ENFORCE_EAGER|0
@@ -160,7 +161,7 @@ EXL3_FUSED_MOE|1
 ENABLE_PREFIX_CACHING|1
 SPEC_METHOD|dflash
 DFLASH_SPECULATIVE_TOKENS|7
-DFLASH_DRAFT_TP|1
+DFLASH_DRAFT_TP|2
 MTP_SPECULATIVE_TOKENS|2
 TOOL_CALL_PARSER|glm47
 REASONING_PARSER|glm45
@@ -181,12 +182,15 @@ VLLM_EXECUTE_MODEL_TIMEOUT_SECONDS|1800
 GLM53_BOOT_SHAPE_WARMUP|1
 GLM53_WARMUP_REQ_TIMEOUT|240
 CG_ESTIMATE|1
+ABLIT|0
 USE_HOST_NCCL|0
 NCCL_HOST_DIR|
 WORKER_NCCL_HOST_DIR|
 NCCL_SO_NAME|libnccl.so.2.30.7
 NCCL_DEBUG|WARN
 NCCL_IB_GID_INDEX|3
+HEAD_GID|
+WORKER_GID|
 NCCL_CROSS_NIC|0
 EXTRA_ARGS|
 GLM53_MIN_AVAILABLE_GIB|112
@@ -201,6 +205,9 @@ EOF
     CACHE_ROOT="${PROJECT_ROOT}/${CACHE_ROOT#./}"
     export CACHE_ROOT
   fi
+  HEAD_GID="${HEAD_GID:-${NCCL_IB_GID_INDEX}}"
+  WORKER_GID="${WORKER_GID:-${NCCL_IB_GID_INDEX}}"
+  export HEAD_GID WORKER_GID
 }
 
 resolved_keys() {
@@ -264,12 +271,15 @@ VLLM_EXECUTE_MODEL_TIMEOUT_SECONDS
 GLM53_BOOT_SHAPE_WARMUP
 GLM53_WARMUP_REQ_TIMEOUT
 CG_ESTIMATE
+ABLIT
 USE_HOST_NCCL
 NCCL_HOST_DIR
 WORKER_NCCL_HOST_DIR
 NCCL_SO_NAME
 NCCL_DEBUG
 NCCL_IB_GID_INDEX
+HEAD_GID
+WORKER_GID
 NCCL_CROSS_NIC
 EXTRA_ARGS
 GLM53_MIN_AVAILABLE_GIB
@@ -291,8 +301,8 @@ validate_profile() {
     || die "MAX_MODEL_LEN must be between 1 and MiaAI's reviewed 1000000"
   (( MAX_NUM_SEQS > 0 && MAX_NUM_SEQS <= 4 )) \
     || die "MAX_NUM_SEQS must be between 1 and MiaAI's reviewed value 4"
-  (( MAX_NUM_BATCHED_TOKENS > 0 && MAX_NUM_BATCHED_TOKENS <= 1024 )) \
-    || die "MAX_NUM_BATCHED_TOKENS above 1024 can exhaust the GB10 indexer on long prefill"
+  (( MAX_NUM_BATCHED_TOKENS > 0 && MAX_NUM_BATCHED_TOKENS <= 2048 )) \
+    || die "MAX_NUM_BATCHED_TOKENS must be between 1 and MiaAI's reviewed value 2048"
   awk -v value="${GPU_MEMORY_UTILIZATION}" 'BEGIN {exit !(value > 0 && value <= 0.87)}' \
     || die "GPU_MEMORY_UTILIZATION must not exceed MiaAI's padded-slot-share profile value 0.87"
   [[ "${KV_CACHE_DTYPE}" == "fp8" ]] \
@@ -310,8 +320,8 @@ validate_profile() {
   if [[ "${SPEC_METHOD}" == "dflash" ]]; then
     [[ "${DFLASH_SPECULATIVE_TOKENS}" == "7" ]] \
       || die "DFlash2 is trained for block size 8 and requires exactly 7 draft tokens"
-    [[ "${DFLASH_DRAFT_TP}" == "1" ]] \
-      || die "DFLASH_DRAFT_TP must remain 1 to avoid CX7 traffic on each draft step"
+    [[ "${DFLASH_DRAFT_TP}" == "2" ]] \
+      || die "DFLASH_DRAFT_TP must remain 2 for MiaAI's measured dual-rank draft path"
   fi
   (( MTP_SPECULATIVE_TOKENS >= 0 && MTP_SPECULATIVE_TOKENS <= 2 )) \
     || die "MTP_SPECULATIVE_TOKENS must be between 0 and MiaAI's rollback value 2"
@@ -329,6 +339,12 @@ validate_profile() {
     || die "GLM53_WARMUP_REQ_TIMEOUT must be positive"
   [[ "${CG_ESTIMATE}" == "0" || "${CG_ESTIMATE}" == "1" ]] \
     || die "CG_ESTIMATE must be 0 or 1"
+  [[ "${ABLIT}" == "0" ]] \
+    || die "ABLIT must remain 0; ml-compute serves the reviewed stock-quality weights"
+  [[ "${NCCL_IB_GID_INDEX}" =~ ^[0-9]+$ \
+    && "${HEAD_GID}" =~ ^[0-9]+$ \
+    && "${WORKER_GID}" =~ ^[0-9]+$ ]] \
+    || die "NCCL_IB_GID_INDEX, HEAD_GID, and WORKER_GID must be non-negative integers"
   [[ "${LANGUAGE_MODEL_ONLY}" == "0" || "${LANGUAGE_MODEL_ONLY}" == "1" ]] \
     || die "LANGUAGE_MODEL_ONLY must be 0 or 1"
   [[ "${LIMIT_MM}" == '{"image":4,"video":1}' ]] \
@@ -517,6 +533,26 @@ resolve_cluster_interfaces() {
   log "RoCE mapping: head ${HEAD_CX7_IP}=${HEAD_CX7_IF}/${HEAD_CX7_IB}, worker ${WORKER_CX7_IP}=${WORKER_CX7_IF}/${WORKER_CX7_IB}"
 }
 
+check_roce_gid_indices() {
+  local head_path worker_path head_gid worker_gid head_type worker_type
+  head_path="/sys/class/infiniband/${HEAD_CX7_IB}/ports/1"
+  worker_path="/sys/class/infiniband/${WORKER_CX7_IB}/ports/1"
+  head_gid="$(cat "${head_path}/gids/${HEAD_GID}" 2>/dev/null || true)"
+  worker_gid="$(wrun "cat '${worker_path}/gids/${WORKER_GID}' 2>/dev/null" || true)"
+  head_type="$(cat "${head_path}/gid_attrs/types/${HEAD_GID}" 2>/dev/null || true)"
+  worker_type="$(wrun "cat '${worker_path}/gid_attrs/types/${WORKER_GID}' 2>/dev/null" || true)"
+
+  if [[ -z "$(tr -d ':0[:space:]' <<<"${head_gid}")" \
+    || -z "$(tr -d ':0[:space:]' <<<"${worker_gid}")" \
+    || ( -n "${head_type}" && "${head_type}" != "RoCE v2" ) \
+    || ( -n "${worker_type}" && "${worker_type}" != "RoCE v2" ) ]]; then
+    warn "Invalid per-rank RoCEv2 GID selection: head=${HEAD_GID} (${head_gid:-missing}, ${head_type:-unknown}), worker=${WORKER_GID} (${worker_gid:-missing}, ${worker_type:-unknown})"
+    warn "Choose each node's populated RoCE v2 entry; HEAD_GID and WORKER_GID need not match"
+    die "Set HEAD_GID and WORKER_GID in ${PROFILE_FILE}, or set one shared NCCL_IB_GID_INDEX"
+  fi
+  log "RoCEv2 GIDs: head ${HEAD_CX7_IB}[${HEAD_GID}], worker ${WORKER_CX7_IB}[${WORKER_GID}]"
+}
+
 remote_home() {
   wrun 'printf %s "$HOME"'
 }
@@ -670,6 +706,7 @@ check_host() {
   wrun "nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | grep -q GB10" \
     || die "NVIDIA GB10 was not detected on the worker"
   resolve_cluster_interfaces
+  check_roce_gid_indices
   ping -c 1 -W 2 "${WORKER_CX7_IP}" >/dev/null 2>&1 \
     || die "Direct RoCE address ${WORKER_CX7_IP} is unreachable from the head"
   check_disk
@@ -729,6 +766,8 @@ write_upstream_env() {
     printf 'WORKER_NCCL_HOST_DIR=%s\n' "${WORKER_NCCL_HOST_DIR:-${remote_root}/nccl-2.30.7}"
     printf 'NCCL_SO_NAME=%s\n' "${NCCL_SO_NAME}"
     printf 'NCCL_IB_GID_INDEX=%s\n' "${NCCL_IB_GID_INDEX}"
+    printf 'HEAD_GID=%s\n' "${HEAD_GID}"
+    printf 'WORKER_GID=%s\n' "${WORKER_GID}"
     printf 'NCCL_CROSS_NIC=%s\n' "${NCCL_CROSS_NIC}"
     printf 'NCCL_DEBUG=%s\n' "${NCCL_DEBUG}"
     printf 'READY_TIMEOUT=%s\n' "${VLLM_ENGINE_READY_TIMEOUT_S}"
@@ -740,6 +779,7 @@ write_upstream_env() {
     printf 'GLM53_BOOT_SHAPE_WARMUP=%s\n' "${GLM53_BOOT_SHAPE_WARMUP}"
     printf 'GLM53_WARMUP_REQ_TIMEOUT=%s\n' "${GLM53_WARMUP_REQ_TIMEOUT}"
     printf 'CG_ESTIMATE=%s\n' "${CG_ESTIMATE}"
+    printf 'ABLIT=%s\n' "${ABLIT}"
     printf 'CONTAINER_HEAD=%s\n' "${GLM53_HEAD_CONTAINER}"
     printf 'CONTAINER_WORKER=%s\n' "${GLM53_WORKER_CONTAINER}"
     printf 'EXTRA_ARGS=%q\n' "${EXTRA_ARGS}"
@@ -903,6 +943,8 @@ materialize_upstream_launcher() {
   [[ -f "${source}" ]] || die "Pinned upstream launcher is missing: ${source}"
   [[ -f "${RECIPE_DIR}/files/chat_template.jinja" ]] \
     || die "Pinned upstream chat template is missing"
+  [[ -f "${RECIPE_DIR}/overlay/patch_kpool_tail_slotmap.py" ]] \
+    || die "Pinned upstream K-pool tail slot-map fix is missing"
   tmp="$(mktemp "${RECIPE_DIR}/.ml-compute-start.XXXXXX")"
   if ! awk '
     BEGIN { host = 0; endpoint = 0; worker_run = 0; worker_devices = 0 }
