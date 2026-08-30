@@ -407,7 +407,7 @@ The GLM path serves
 [`brandonmusic/GLM-5.3-Flash-tr3-4bpw`](https://huggingface.co/brandonmusic/GLM-5.3-Flash-tr3-4bpw),
 a roughly 164 GiB EXL3/TR3 quantization of the multimodal 320B/18B-active MoE.
 The lifecycle wraps [MiaAI-Lab's EXL3 dual-DGX-Spark recipe](https://github.com/MiaAI-Lab/GLM-5.3-Flash-EXL3-2x-DGX-Sparks)
-at pinned revision `0e2e78f3de83624e6733b918724da27fc9040156`, and pins the
+at pinned revision `b5ab8091dec88e324c943deb96c2dfd957db9f36`, and pins the
 measured target snapshot `5ab363a8dcf6405955fd5f99671e01a1c9fb124b`.
 
 This replaces the previous NVFP4/Ray profile. It removes Ray and its object
@@ -415,19 +415,24 @@ stores, joins one vLLM multiprocessing rank per Spark directly at TP=2, uses
 the fused EXL3 MoE path and CUDA graphs, and raises the reviewed request ceiling
 from 256K to 1M. The measured default adds
 [`incoai/GLM-5.3-Flash-DFlash2`](https://huggingface.co/incoai/GLM-5.3-Flash-DFlash2)
-with seven speculative tokens and a rank-0-only draft. The conservative launch
-shape remains four sequences, 1K prefill chunks, 0.87 memory utilization, FP8
+with seven speculative tokens and a TP=2 sharded draft. The reviewed launch
+shape remains four sequences, 2K prefill chunks, 0.87 memory utilization, FP8
 MLA KV, prefix caching, and skipped maximum-size multimodal dummy profiling.
 Padded DFlash2 pages now share the MLA allocation, allowing the 1M profile
 without the previous 0.8847 CUDA-graph workaround. The updated overlay also
 fixes hybrid prefix-cache hits, keeps long peer prefills off active decode
 steps, persists Triton/TileLang caches, warms common shapes after health, and
 keeps client stop strings dormant until GLM exits its reasoning block.
-The newer upstream also carries XGrammar speculative-termination fixes and
-detects a dead worker rank in roughly 30 seconds instead of waiting for the
-full startup timeout. Its remeasured cold prefill is about 936 tok/s at 256K
-and 928 tok/s at 300K; raw decode settings and the immutable runtime image are
-unchanged. The profile conservatively retains CUDA-graph memory estimation;
+The newer upstream also carries XGrammar speculative-termination fixes, clamps
+K-pool tail slot mapping so long generations cannot write through an
+out-of-range block-table entry, supports a separate RoCEv2 GID index per rank,
+and detects a dead worker rank in roughly 30 seconds instead of waiting for the
+full startup timeout. MiaAI measured the 2K prefill keep at roughly +16% near
+8K, +7% near 16K, and +3% near 100K versus 1K chunks. Sharding DFlash2 across
+both ranks raised its structured decode median from 61.7 to 65.1 tok/s while
+prose held within noise. Raw model weights and the immutable runtime image are
+unchanged, and optional abliteration is pinned off to preserve stock model
+behavior. The profile conservatively retains CUDA-graph memory estimation;
 turning `CG_ESTIMATE=0` may recover roughly 2.6 GiB for KV capacity, but is not
 a decode-speed optimization and requires on-kit validation.
 On workers whose Docker/systemd device cgroup rejects CUDA initialization, the
@@ -471,6 +476,9 @@ and memory guards are in
 The legacy profile filename is retained intentionally for existing automation.
 At launch, the adapter resolves the actual netdev and RDMA HCA owning each
 configured RoCE IP, so the two Sparks do not need identical interface names.
+`HEAD_GID` and `WORKER_GID` may likewise differ when the two HCAs expose their
+populated RoCEv2 entries at different indices; blank overrides inherit the
+shared `NCCL_IB_GID_INDEX` value.
 The lifecycle implementation is
 [`scripts/GLM53-Flash-Dual-DSpark.sh`](scripts/GLM53-Flash-Dual-DSpark.sh).
 The upstream checkout and caches remain under ignored `data/dspark/glm53-flash/`.

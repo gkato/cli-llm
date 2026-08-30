@@ -939,7 +939,7 @@ models:
     serve_backend: glm53-flash
     external_recipe: scripts/GLM53-Flash-Dual-DSpark.sh
     upstream_repo: https://github.com/MiaAI-Lab/GLM-5.3-Flash-EXL3-2x-DGX-Sparks
-    upstream_revision: 0e2e78f3de83624e6733b918724da27fc9040156
+    upstream_revision: b5ab8091dec88e324c943deb96c2dfd957db9f36
     model_card: https://huggingface.co/brandonmusic/GLM-5.3-Flash-tr3-4bpw
     model_revision: 5ab363a8dcf6405955fd5f99671e01a1c9fb124b
     model_license: shapleymcg-1.0
@@ -948,10 +948,10 @@ models:
     tensor_parallel_size: 2
     distributed_executor_backend: mp
     runtime: vllm
-    runtime_image: ml-compute/glm53-flash-exl3:mp-dflash2-v3-0e2e78f
+    runtime_image: ml-compute/glm53-flash-exl3:mp-dflash2-v4-b5ab809
     runtime_source_image: ghcr.io/miaai-lab/glm-5.3-flash-2x-dgx-sparks@sha256:9bb1557a4234fce63d59599e44d10747eabd742beb337eebf9e7070be8a0fd58
     runtime_base_image: vllm/vllm-openai:glm53-flash-arm64-cu130@sha256:905c02933be6021301db2dc284e24e3727467aa3a0f63b41d609885778a07bce
-    runtime_kernel_patch: exl3-sm121-dflash2-slotshare-apc-xgrammar-overlay
+    runtime_kernel_patch: exl3-sm121-dflash2-slotshare-apc-xgrammar-kpool-overlay
     exllamav3_revision: c5d9c657966ffeeaa9353f0cc899f18629da4a13
     architecture: glm5_next
     parameters_total_billion: 320
@@ -965,7 +965,7 @@ models:
     native_context_len: 1048576
     max_model_len: 1000000
     max_num_seqs: 4
-    max_num_batched_tokens: 1024
+    max_num_batched_tokens: 2048
     gpu_memory_utilization: 0.87
     cuda_graph_memory_profiler: true
     cuda_graph_estimate_deduction: true
@@ -979,13 +979,16 @@ models:
     boot_shape_warmup: true
     suppress_stops_during_reasoning: true
     xgrammar_speculative_termination_patch: true
+    kpool_tail_slotmap_patch: true
+    per_rank_roce_gid: true
+    abliteration: false
     worker_startup_fail_fast: true
     worker_cuda_device_passthrough: explicit_nonprivileged
     speculative_method: dflash
     speculative_tokens: 7
     speculative_draft_model: incoai/GLM-5.3-Flash-DFlash2
     speculative_draft_revision: 7d74cdd881ed7e32c31175984a67823127b66cfe
-    speculative_draft_tensor_parallel_size: 1
+    speculative_draft_tensor_parallel_size: 2
     speculative_draft_license: CC-BY-NC-ND-4.0
     commercial_speculative_method: mtp
     commercial_speculative_tokens: 2
