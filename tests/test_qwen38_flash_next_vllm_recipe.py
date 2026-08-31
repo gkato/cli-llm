@@ -96,6 +96,11 @@ class Qwen38FlashNextVllmRecipeTests(unittest.TestCase):
         self.assertIn("materialize_launcher", script)
         self.assertIn("resolve_cluster_interfaces", script)
         self.assertIn("verify_model_snapshot", script)
+        # Snapshot verification must assert every weight shard, not just
+        # config.json, so a partial cache cannot pass and stall the launch.
+        self.assertIn("snapshot_shard_files", script)
+        self.assertIn("model.safetensors.index.json", script)
+        self.assertIn("*.incomplete", script)
         self.assertIn("drop_page_caches", script)
         self.assertIn("check_runtime_memory_headroom", script)
         self.assertIn("run_proxy_cli serve", script)
