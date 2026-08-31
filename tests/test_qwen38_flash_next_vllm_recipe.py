@@ -102,6 +102,8 @@ class Qwen38FlashNextVllmRecipeTests(unittest.TestCase):
         self.assertIn("model.safetensors.index.json", script)
         self.assertIn("*.incomplete", script)
         self.assertIn("drop_page_caches", script)
+        self.assertIn("ensure_uvm_nodes", script)
+        self.assertIn("gpu_cuda_preflight", script)
         self.assertIn("check_runtime_memory_headroom", script)
         self.assertIn("run_proxy_cli serve", script)
         self.assertIn("run_proxy_cli smoke", script)
@@ -117,8 +119,10 @@ HF_HOME="$HF_CACHE_DIR" uvx hf download "$MODEL_ID" --cache-dir "$HUB_PATH"
     elif command -v huggingface-cli &>/dev/null; then
 HF_HOME="$HF_CACHE_DIR" huggingface-cli download "$MODEL_ID" --cache-dir "$HUB_PATH"
 HF_HOME="$HF_CACHE_DIR" hf download "$MODEL_ID" --cache-dir "$HUB_PATH"
+    --device /dev/infiniband:/dev/infiniband __SLASH__
     $MODEL_ID __SLASH__
     --served-model-name $SERVED_MODEL_NAME __SLASH__
+    --device /dev/infiniband:/dev/infiniband __SLASH__
     $MODEL_ID __SLASH__
     --served-model-name $SERVED_MODEL_NAME __SLASH__
     --host 0.0.0.0 __SLASH__
@@ -145,6 +149,12 @@ HF_HOME="$HF_CACHE_DIR" hf download "$MODEL_ID" --cache-dir "$HUB_PATH"
                 "elif command -v huggingface-cli &>/dev/null "
                 "&& ! command -v hf &>/dev/null; then",
                 patched,
+            )
+            # Both docker runs must gain explicit uvm device access so a wrong
+            # uvm major in the container device cgroup can't block cuInit().
+            self.assertEqual(
+                patched.count("--device /dev/nvidia-uvm --device /dev/nvidia-uvm-tools"),
+                2,
             )
 
     def test_first_run_stages_every_required_artifact(self):

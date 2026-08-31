@@ -570,9 +570,39 @@ raw_model_ready() {
     >/dev/null 2>&1
 }
 
+ensure_uvm_nodes() {
+  # docker --device /dev/nvidia-uvm needs the node present before the container
+  # starts; nvidia-modprobe is setuid-root, so no sudo is required.
+  if command -v nvidia-modprobe >/dev/null 2>&1; then
+    nvidia-modprobe -u -c 0 >/dev/null 2>&1 || true
+  fi
+  [[ -e /dev/nvidia-uvm ]] \
+    || die "head /dev/nvidia-uvm missing; load the NVIDIA driver/UVM before launching"
+  wrun 'command -v nvidia-modprobe >/dev/null 2>&1 && nvidia-modprobe -u -c 0 >/dev/null 2>&1 || true; [ -e /dev/nvidia-uvm ]' \
+    || die "worker /dev/nvidia-uvm missing; load the NVIDIA driver/UVM before launching"
+}
+
+gpu_cuda_preflight() {
+  # Confirm CUDA actually initialises inside the pinned image on BOTH nodes,
+  # using the same uvm device flags the launcher uses. nvidia-smi can succeed
+  # while cuInit() fails (wrong uvm major in the container device cgroup); this
+  # catches that in seconds instead of a 10-minute cross-node rendezvous timeout.
+  local probe='import torch,sys; sys.exit(0 if torch.cuda.is_available() else 1)'
+  local run="docker run --rm --gpus all --device /dev/nvidia-uvm --device /dev/nvidia-uvm-tools --entrypoint python3 '${VLLM_IMAGE}' -c '${probe}'"
+  docker image inspect "${VLLM_IMAGE}" >/dev/null 2>&1 \
+    || die "Pinned vLLM image is not present on head; run qwen38-flash-next-vllm pull"
+  eval "${run}" >/dev/null 2>&1 \
+    || die "CUDA failed to initialise in the pinned image on head (nvidia-smi may work while cuInit fails; check container GPU/uvm access)"
+  wrun "${run}" >/dev/null 2>&1 \
+    || die "CUDA failed to initialise in the pinned image on worker (nvidia-smi may work while cuInit fails; check container GPU/uvm access)"
+  log "CUDA preflight passed inside the pinned image on both nodes"
+}
+
 start_service() {
   check_host
   check_public_exposure
+  ensure_uvm_nodes
+  gpu_cuda_preflight
   if raw_model_ready; then
     log "Pinned Qwen vLLM model is already ready on the private raw endpoint"
   else

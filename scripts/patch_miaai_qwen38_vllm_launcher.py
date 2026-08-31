@@ -62,6 +62,20 @@ def main() -> int:
         "huggingface-cli download guard",
     )
 
+    # Some hosts' NVIDIA container runtime whitelists the wrong nvidia-uvm major
+    # in the container device cgroup, so CUDA's cuInit() is denied /dev/nvidia-uvm
+    # (nvidia-smi/NVML still work, masking it) and the worker dies at init_device.
+    # Pass the uvm devices explicitly so the correct major lands in both the node
+    # and the cgroup, on head and worker alike.
+    uvm_anchor = "    --device /dev/infiniband:/dev/infiniband \\\n"
+    uvm_count = text.count(uvm_anchor)
+    if uvm_count != 2:
+        raise RuntimeError(f"expected two infiniband device anchors, found {uvm_count}")
+    text = text.replace(
+        uvm_anchor,
+        uvm_anchor + "    --device /dev/nvidia-uvm --device /dev/nvidia-uvm-tools \\\n",
+    )
+
     text = replace_once(
         text,
         'HEAD_HAS=$( [[ -d "$HUB_PATH/models--${ORG}--${NAME}" ]] && echo 1 || echo 0 )',
