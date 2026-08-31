@@ -464,16 +464,72 @@ worker_hf_home() {
   fi
 }
 
+snapshot_shard_files() {
+  # Emit the weight files the pinned snapshot must contain (one per line),
+  # derived from its safetensors index, or the single-file fallback.
+  local snapshot_dir="$1" python
+  python="$(project_python)"
+  SNAPSHOT_DIR="${snapshot_dir}" "${python}" - <<'PY'
+import json
+import os
+import sys
+
+snap = os.environ["SNAPSHOT_DIR"]
+index = os.path.join(snap, "model.safetensors.index.json")
+if os.path.isfile(index):
+    with open(index, encoding="utf-8") as handle:
+        weight_map = json.load(handle).get("weight_map") or {}
+    files = sorted(set(weight_map.values()))
+    if not files:
+        sys.exit("safetensors index lists no weight shards")
+elif os.path.isfile(os.path.join(snap, "model.safetensors")):
+    files = ["model.safetensors"]
+else:
+    sys.exit("no safetensors index or single-file weights in snapshot")
+sys.stdout.write("\n".join(files))
+PY
+}
+
 verify_model_snapshot() {
-  local repo_name head_snapshot worker_snapshot
+  local repo_name head_snapshot worker_home worker_snapshot
+  local shard shard_files remote_check
   repo_name="models--${MODEL_ID%%/*}--${MODEL_ID##*/}"
   head_snapshot="${HF_HOME}/hub/${repo_name}/snapshots/${MODEL_REVISION}"
-  worker_snapshot="$(worker_hf_home)/hub/${repo_name}/snapshots/${MODEL_REVISION}"
+  worker_home="$(worker_hf_home)"
+  worker_snapshot="${worker_home}/hub/${repo_name}/snapshots/${MODEL_REVISION}"
+
   [[ -f "${head_snapshot}/config.json" ]] \
-    || die "Pinned model snapshot is incomplete on head: ${head_snapshot}"
+    || die "Pinned model snapshot missing config.json on head: ${head_snapshot}"
+  shard_files="$(snapshot_shard_files "${head_snapshot}")" \
+    || die "Head snapshot weight manifest is unreadable: ${head_snapshot} (rerun download)"
+
+  # config.json alone is not proof of a complete cache: a partial download
+  # otherwise passes verification and then starves the launch rendezvous while
+  # each node reconstructs shards. Require every referenced shard to resolve to
+  # a non-empty file, and reject any interrupted blob downloads.
+  while IFS= read -r shard; do
+    [[ -n "${shard}" ]] || continue
+    [[ -s "${head_snapshot}/${shard}" ]] \
+      || die "Model shard missing or empty on head: ${head_snapshot}/${shard} (rerun download)"
+  done <<<"${shard_files}"
+  if compgen -G "${HF_HOME}/hub/${repo_name}/blobs/*.incomplete" >/dev/null 2>&1; then
+    die "Interrupted blob downloads under ${HF_HOME}/hub/${repo_name}/blobs (rerun download)"
+  fi
+
+  # Assert the same on the worker over ssh as one quoted && chain, so no weight
+  # manifest or interpreter is needed on the remote host.
   wrun "test -f '${worker_snapshot}/config.json'" \
-    || die "Pinned model snapshot is incomplete on worker: ${worker_snapshot}"
-  log "Verified pinned model snapshot on both nodes: ${MODEL_REVISION}"
+    || die "Pinned model snapshot missing config.json on worker: ${worker_snapshot}"
+  remote_check="true"
+  while IFS= read -r shard; do
+    [[ -n "${shard}" ]] || continue
+    remote_check+=" && test -s '${worker_snapshot}/${shard}'"
+  done <<<"${shard_files}"
+  remote_check+=" && ! ls '${worker_home}/hub/${repo_name}/blobs/'*.incomplete >/dev/null 2>&1"
+  wrun "${remote_check}" \
+    || die "Model shards missing/empty or still downloading on worker: ${worker_snapshot} (rerun download)"
+
+  log "Verified pinned snapshot on both nodes: config + $(grep -c . <<<"${shard_files}") weight shard(s) @ ${MODEL_REVISION}"
 }
 
 download_model() {
