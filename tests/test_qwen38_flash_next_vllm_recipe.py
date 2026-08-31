@@ -109,6 +109,7 @@ HF_TOKEN="${HF_TOKEN:-}"
 HEAD_HAS=$( [[ -d "$HUB_PATH/models--${ORG}--${NAME}" ]] && echo 1 || echo 0 )
 WORKER_HAS=$(ssh_worker "test -d '$REMOTE_HUB/models--${ORG}--${NAME}' && echo 1 || echo 0" 2>/dev/null || echo 0)
 HF_HOME="$HF_CACHE_DIR" uvx hf download "$MODEL_ID" --cache-dir "$HUB_PATH"
+    elif command -v huggingface-cli &>/dev/null; then
 HF_HOME="$HF_CACHE_DIR" huggingface-cli download "$MODEL_ID" --cache-dir "$HUB_PATH"
 HF_HOME="$HF_CACHE_DIR" hf download "$MODEL_ID" --cache-dir "$HUB_PATH"
     $MODEL_ID __SLASH__
@@ -135,6 +136,11 @@ HF_HOME="$HF_CACHE_DIR" hf download "$MODEL_ID" --cache-dir "$HUB_PATH"
             self.assertIn("--host $HOST_BIND", patched)
             self.assertNotIn("--host 0.0.0.0", patched)
             self.assertIn("snapshots/$HF_REVISION/config.json", patched)
+            self.assertIn(
+                "elif command -v huggingface-cli &>/dev/null "
+                "&& ! command -v hf &>/dev/null; then",
+                patched,
+            )
 
     def test_first_run_stages_every_required_artifact(self):
         starter = STARTER.read_text(encoding="utf-8")

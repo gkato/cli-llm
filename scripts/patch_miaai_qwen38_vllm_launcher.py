@@ -51,6 +51,17 @@ def main() -> int:
             f"{command.split()[0]} download",
         )
 
+    # In huggingface_hub >= 1.0 the `huggingface-cli` entry point still resolves
+    # (so `command -v` succeeds) but is a dead no-op that exits without
+    # downloading. Only fall into that branch when the working `hf` CLI is
+    # absent, so modern hosts drop through to the `hf download` branch below.
+    text = replace_once(
+        text,
+        "elif command -v huggingface-cli &>/dev/null; then",
+        "elif command -v huggingface-cli &>/dev/null && ! command -v hf &>/dev/null; then",
+        "huggingface-cli download guard",
+    )
+
     text = replace_once(
         text,
         'HEAD_HAS=$( [[ -d "$HUB_PATH/models--${ORG}--${NAME}" ]] && echo 1 || echo 0 )',
