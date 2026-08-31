@@ -928,6 +928,65 @@ models:
     harness_coexistence: false
     cluster_profile: config/dspark-qwen38-flash-next-nvfp4.env
 
+  # MiaAI-Lab's current, history-rewritten Qwen recipe. This remains a
+  # separate backend from the SGLang/NVFP4-KV recipe above because the runtime,
+  # cache format, PLE placement, launcher schema, and performance envelope all
+  # changed. The serving knobs below match MiaAI's measured vLLM run exactly;
+  # ml-compute adds immutable pins and the private proxy boundary.
+  qwen3.8-flash-next-nvfp4-vllm-dspark:
+    hf_id: RadixArk/Qwen3.8-Flash-Next-NVFP4
+    served_model_name: qwen3.8-flash-next
+    serve_backend: qwen38-flash-next-vllm
+    external_recipe: scripts/Qwen38-Flash-Next-vLLM-Dual-DSpark.sh
+    upstream_repo: https://github.com/MiaAI-Lab/Qwen3.8-Flash-Next-Dual-DGX-Sparks
+    upstream_revision: 169fbad266f2791335a3102f0d3d625e7c295563
+    model_revision: 7b719225242aacd3dbd3f9407468c2ee9a9d2594
+    nodes: 2
+    tensor_parallel_size: 2
+    expert_parallel: true
+    distributed_executor_backend: mp
+    runtime: vllm
+    runtime_image: vllm/vllm-openai:qwen38-flash-next@sha256:fc120ece0a388cc0aa1caad4a9f1cd92113484ab7ec2fd0efadd62585be05bf8
+    runtime_kernel_patch: ple-fp8-resolver-bind-mount
+    architecture: qwen4_exp
+    parameters_total_billion: 176
+    parameters_active_billion: 6
+    quantization: modelopt_fp4
+    weight_format: nvfp4
+    checkpoint_size_gib: 125.91
+    native_context_len: 262144
+    max_model_len: 1000000
+    rope_scaling: yarn
+    rope_scaling_factor: 4.0
+    max_num_seqs: 8
+    max_num_batched_tokens: 8192
+    gpu_memory_utilization: 0.835
+    worker_memory_reserve_gib: 6
+    kv_cache_dtype: bf16
+    measured_kv_cache_gib: 35.11
+    measured_kv_cache_tokens: 2481424
+    measured_full_context_residency: 2.48
+    ple_offload: false
+    speculative_method: mtp
+    speculative_tokens: 3
+    cuda_graphs: true
+    cuda_graph_mode: FULL_DECODE_ONLY
+    reasoning_parser: qwen3
+    tool_call_parser: qwen3_coder
+    multimodal: true
+    inputs:
+      - text
+      - image
+      - video
+    raw_api_url: http://127.0.0.1:8888
+    proxy_bind: 0.0.0.0:8000
+    proxy_url: http://127.0.0.1:8000
+    current_miaai_recipe: true
+    verified_on_gb10: true
+    dedicated_cluster: true
+    harness_coexistence: false
+    cluster_profile: config/dspark-qwen38-flash-next-vllm.env
+
   # GLM-5.3 Flash EXL3 + DFlash2 on two linked DGX Sparks. The legacy registry
   # key is retained for callers that already select it, but the implementation
   # is MiaAI-Lab's measured fused-EXL3 direct-MP recipe (not NVFP4/Ray).
