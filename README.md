@@ -4,7 +4,7 @@ Local LLM inference and fine-tuning on your own hardware. Built for the **NVIDIA
 (GB10)** — Grace CPU + Blackwell GPU with 128 GB unified memory — and works on any local
 box with an NVIDIA GPU.
 
-One CLI, nine serving backends. Language models use the OpenAI-compatible `/v1`
+One CLI, ten serving backends. Language models use the OpenAI-compatible `/v1`
 API; lightweight vision detectors use a small task-specific `/v1` API:
 
 | Backend | Runs | Weights | Command |
@@ -16,6 +16,7 @@ API; lightweight vision detectors use a small task-specific `/v1` API:
 | **NIM** | Docker container (TensorRT-LLM) | NVIDIA-packaged | `nim serve <alias>` |
 | **DSpark cluster** | MiaAI/Anemll vLLM on two GB10 nodes | DeepSeek V4 Flash 0731 | `dspark <action>` |
 | **Qwen Flash Next** | MiaAI SGLang TP2 on two GB10 nodes | Qwen3.8 Flash Next NVFP4 | `qwen38-flash-next <action>` |
+| **Qwen Flash Next vLLM** | Current MiaAI vLLM TP2+EP+MTP3 on two GB10 nodes | Qwen3.8 Flash Next NVFP4 | `qwen38-flash-next-vllm <action>` |
 | **GLM Flash** | Dedicated vLLM + MP TP2 on two GB10 nodes | GLM-5.3 Flash EXL3 + DFlash2 | `glm53-flash <action>` |
 | **DSpark One** | MiaAI SparkInfer/EXL3 on one dedicated GB10 | DeepSeek V4 Flash 0731 | `dspark-one <action>` |
 
@@ -333,7 +334,7 @@ VLLM_BASE_URL=http://127.0.0.1:8888 \
 BENCH_LABEL=miaai-512k scripts/bench_dspark_ab.sh full
 ```
 
-### Qwen3.8 Flash Next (two linked GB10 systems)
+### Qwen3.8 Flash Next SGLang (two linked GB10 systems)
 
 The Qwen path wraps
 [MiaAI-Lab's dual-DGX-Spark recipe](https://github.com/MiaAI-Lab/Qwen3.8-Flash-Next-Dual-DGX-Sparks)
@@ -400,6 +401,53 @@ python3 -m ml.cli qwen38-flash-next logs
 python3 -m ml.cli qwen38-flash-next logs-worker
 python3 -m ml.cli qwen38-flash-next stop
 ```
+
+### Qwen3.8 Flash Next vLLM — current MiaAI recipe
+
+MiaAI replaced its Qwen repository history with a new vLLM implementation.
+ml-compute exposes that implementation as a separate backend so the proven
+SGLang/NVFP4-KV path remains available. The new recipe pins MiaAI revision
+`169fbad266f2791335a3102f0d3d625e7c295563`, the model snapshot, and the
+multi-architecture vLLM image digest.
+
+The execution profile matches MiaAI's measured run: multiprocessing TP=2,
+expert parallel, MTP3, `GPU_MEMORY_UTILIZATION=0.835`, eight sequences, 8192
+batched tokens, BF16 KV, GPU-resident FP8 PLE, full-decode CUDA graphs, and a
+1,000,000-token YaRN ceiling. MiaAI measured a 35.11 GiB KV pool containing
+2,481,424 tokens and reported batch-one decode between 36.4 and 56.0 tok/s,
+depending on content. The configured eight sequences are oversubscribed at
+full context: about 2.48 simultaneous 1M requests remain resident without
+preemption.
+
+ml-compute's generated launcher overlay does not change those performance
+arguments. It adds the immutable model revision, patches MiaAI's hardcoded
+`0.0.0.0` raw bind to `127.0.0.1`, detects the RoCE devices from their IPs,
+checks unified-memory headroom, and retains the authenticated proxy on port
+8000. The overlay also verifies the exact snapshot on both nodes so an older
+Hugging Face cache cannot silently satisfy the download check.
+
+Run the new backend on the head Spark:
+
+```bash
+python3 -m ml.cli qwen38-flash-next-vllm setup
+python3 -m ml.cli qwen38-flash-next-vllm pull
+python3 -m ml.cli qwen38-flash-next-vllm download
+python3 -m ml.cli qwen38-flash-next-vllm start
+python3 -m ml.cli qwen38-flash-next-vllm smoke
+```
+
+Or perform the first deployment and start through the convenience wrapper:
+
+```bash
+scripts/start-Qwen38-Flash-Next-vLLM-Dual-DSpark.sh --first-run
+```
+
+Configuration lives in
+[`config/dspark-qwen38-flash-next-vllm.env`](config/dspark-qwen38-flash-next-vllm.env),
+and the lifecycle adapter is
+[`scripts/Qwen38-Flash-Next-vLLM-Dual-DSpark.sh`](scripts/Qwen38-Flash-Next-vLLM-Dual-DSpark.sh).
+The SGLang and vLLM recipes use the same two machines and raw/proxy ports, so
+stop one before starting the other.
 
 ### GLM-5.3 Flash EXL3 + DFlash2 (two linked GB10 systems)
 
@@ -647,6 +695,7 @@ tuning. A representative slice of what's registered:
 | `gemma4-31b-it-fp8` | 31B via runtime FP8 quant — GB10-sized |
 | `qwen2.5-coder-32b` (llama.cpp) | Q8_0 GGUF with `--jinja` — real tool calling for agentic coders |
 | `qwen3.8-flash-next-nvfp4-dspark` | Dual-Spark SGLang TP2, SM121 QSA + NVFP4-KV patch, 1M YaRN profile |
+| `qwen3.8-flash-next-nvfp4-vllm-dspark` | Current MiaAI dual-Spark vLLM TP2+EP+MTP3, measured BF16-KV 1M profile |
 | `glm-5.3-flash-nvfp4-dspark` | Legacy key for dual-Spark EXL3/MP TP2 + DFlash2, 1M profile |
 | `deepseek-v4-flash-0731-dspark-one` | One-Spark TP=1 EXL3 recipe, 384K single-request profile |
 
@@ -1066,6 +1115,7 @@ ml-compute/
 ├── config/
 │   ├── dspark-spark4e89-thinkstationpgx.env   dual-Spark DeepSeek profile
 │   ├── dspark-qwen38-flash-next-nvfp4.env     dual-Spark Qwen 1M NVFP4-KV profile
+│   ├── dspark-qwen38-flash-next-vllm.env      current MiaAI Qwen vLLM performance profile
 │   ├── dspark-glm53-flash-nvfp4.env            dual-Spark GLM EXL3 1M profile (legacy name)
 │   └── dspark-one-deepseek-v4-flash-0731.env  one-Spark 384K profile
 ├── Makefile.gb10               LoRA fine-tuning on DGX Spark (bf16, HF+PEFT+TRL)
@@ -1075,6 +1125,8 @@ ml-compute/
 │   ├── DS4-Flash-DSpark.sh         dual-Spark DeepSeek lifecycle
 │   ├── Qwen38-Flash-Next-Dual-DSpark.sh dual-Spark Qwen lifecycle
 │   ├── start-Qwen38-Flash-Next-Dual-DSpark.sh Qwen first-run/start wrapper
+│   ├── Qwen38-Flash-Next-vLLM-Dual-DSpark.sh current MiaAI Qwen vLLM lifecycle
+│   ├── start-Qwen38-Flash-Next-vLLM-Dual-DSpark.sh vLLM first-run/start wrapper
 │   ├── GLM53-Flash-Dual-DSpark.sh  dual-Spark GLM MP/vLLM lifecycle
 │   ├── start-GLM53-Flash-Dual-DSpark.sh GLM first-run/start wrapper
 │   ├── DS4-Flash-One-DSpark.sh     one-Spark lifecycle + safety checks

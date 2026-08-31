@@ -77,6 +77,13 @@ COMMON WORKFLOWS
     ml.cli qwen38-flash-next start        # worker-first TP=2 + safety proxy
 
 \b
+  Two-node vLLM serving (Qwen3.8 Flash Next, current MiaAI recipe):
+    ml.cli qwen38-flash-next-vllm setup   # pin/configure and check both nodes
+    ml.cli qwen38-flash-next-vllm pull    # pull digest-pinned vLLM image
+    ml.cli qwen38-flash-next-vllm download # mirror the pinned model snapshot
+    ml.cli qwen38-flash-next-vllm start   # TP2+EP+MTP3 + safety proxy
+
+\b
   Two-node MP/vLLM serving (GLM-5.3 Flash EXL3, MiaAI GB10 recipe):
     ml.cli glm53-flash setup              # pin MiaAI recipe + check both nodes
     ml.cli glm53-flash pull               # pull digest-pinned EXL3/SM121 image
@@ -119,7 +126,7 @@ def cli():
     """ml-compute — OpenAI-compatible local and clustered inference.
 
     \b
-    Nine serving backends behind a single CLI:
+    Ten serving backends behind a single CLI:
       • vLLM      pip-installed Python process, safetensors →  `ml.cli serve <alias>`
       • llama.cpp local llama-server process, GGUF          →  `ml.cli serve llama <id>`
       • Docker    dedicated vLLM image from model registry  →  `ml.cli docker serve <alias>`
@@ -127,6 +134,7 @@ def cli():
       • NIM       NVIDIA TensorRT-LLM container, Docker      →  `ml.cli nim serve <alias>`
       • DSpark    patched Docker vLLM, two GB10 nodes, TP=2  →  `ml.cli dspark <action>`
       • Qwen Next patched SGLang, two GB10 nodes, TP=2       →  `ml.cli qwen38-flash-next <action>`
+      • Qwen Next MiaAI vLLM+EP, two GB10 nodes, TP=2        →  `ml.cli qwen38-flash-next-vllm <action>`
       • GLM Flash MiaAI-patched vLLM, two GB10 nodes, TP=2   →  `ml.cli glm53-flash <action>`
       • DSpark One EXL3/SparkInfer, one GB10 node, TP=1      →  `ml.cli dspark-one <action>`
 
@@ -1060,6 +1068,51 @@ def qwen38_flash_next_cmd(action: str):
     )
     if not script.is_file():
         raise click.ClickException(f"Qwen Flash Next recipe not found: {script}")
+    result = subprocess.run([str(script), action], check=False)
+    raise click.exceptions.Exit(result.returncode)
+
+
+# ---------------------------------------------------------------------------
+# Qwen3.8 Flash Next — current MiaAI vLLM TP2+EP+MTP3 recipe
+# ---------------------------------------------------------------------------
+
+QWEN38_FLASH_NEXT_VLLM_ACTIONS = [
+    "bootstrap", "configure", "check", "setup", "pull", "download", "start",
+    "status", "memory", "smoke", "logs", "logs-worker", "stop", "update",
+    "all", "path", "help",
+]
+
+
+@cli.command("qwen38-flash-next-vllm")
+@click.argument(
+    "action",
+    required=False,
+    default="help",
+    type=click.Choice(QWEN38_FLASH_NEXT_VLLM_ACTIONS, case_sensitive=False),
+)
+def qwen38_flash_next_vllm_cmd(action: str):
+    """Manage MiaAI's Qwen3.8 Flash Next vLLM recipe on two DGX Sparks.
+
+    \b
+    This is the current MiaAI TP=2 + expert-parallel + MTP3 implementation.
+    ml-compute keeps MiaAI's measured performance settings while pinning the
+    recipe/model/image and placing private vLLM behind the safety proxy.
+
+    \b
+    Typical sequence:
+      ml.cli qwen38-flash-next-vllm setup
+      ml.cli qwen38-flash-next-vllm pull
+      ml.cli qwen38-flash-next-vllm download
+      ml.cli qwen38-flash-next-vllm start
+      ml.cli qwen38-flash-next-vllm smoke
+    """
+    script = (
+        Path(__file__).resolve().parent.parent
+        / "scripts"
+        / "Qwen38-Flash-Next-vLLM-Dual-DSpark.sh"
+    )
+    if not script.is_file():
+        raise click.ClickException(f"Qwen Flash Next vLLM recipe not found: {script}")
     result = subprocess.run([str(script), action], check=False)
     raise click.exceptions.Exit(result.returncode)
 
