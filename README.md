@@ -407,17 +407,17 @@ python3 -m ml.cli qwen38-flash-next stop
 MiaAI replaced its Qwen repository history with a new vLLM implementation.
 ml-compute exposes that implementation as a separate backend so the proven
 SGLang/NVFP4-KV path remains available. The new recipe pins MiaAI revision
-`169fbad266f2791335a3102f0d3d625e7c295563`, the model snapshot, and the
-multi-architecture vLLM image digest.
+`c2325b22602b51a5faf55fc2bebccc34f3f80b9f`, the NVIDIA NVFP4 model snapshot,
+and the multi-architecture vLLM image digest.
 
-The execution profile matches MiaAI's measured run: multiprocessing TP=2,
-expert parallel, MTP3, `GPU_MEMORY_UTILIZATION=0.835`, eight sequences, 8192
-batched tokens, BF16 KV, GPU-resident FP8 PLE, full-decode CUDA graphs, and a
-1,000,000-token YaRN ceiling. MiaAI measured a 35.11 GiB KV pool containing
-2,481,424 tokens and reported batch-one decode between 36.4 and 56.0 tok/s,
-depending on content. The configured eight sequences are oversubscribed at
-full context: about 2.48 simultaneous 1M requests remain resident without
-preemption.
+The execution profile uses multiprocessing TP=2, expert parallel, MTP3,
+`GPU_MEMORY_UTILIZATION=0.835`, eight sequences, 8192 batched tokens, FP8 KV,
+GPU-resident FP8 PLE, full-decode CUDA graphs, and a 1,000,000-token YaRN
+ceiling. MiaAI measured a 32.02 GiB FP8 KV pool containing 3,652,200 tokens,
+about 3.65 resident 1M contexts. FP8 KV is a capacity/quality tradeoff, so the
+upstream reasoning and needle checks should be repeated on production prompts.
+Reduced-vocabulary MTP, FP8-dense experiments, GB10 QSA tuning, and NFS weight
+sharing remain disabled by default.
 
 ml-compute's generated launcher overlay does not change those performance
 arguments. It adds the immutable model revision, patches MiaAI's hardcoded

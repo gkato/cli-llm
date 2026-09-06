@@ -934,26 +934,26 @@ models:
   # changed. The serving knobs below match MiaAI's measured vLLM run exactly;
   # ml-compute adds immutable pins and the private proxy boundary.
   qwen3.8-flash-next-nvfp4-vllm-dspark:
-    hf_id: RadixArk/Qwen3.8-Flash-Next-NVFP4
+    hf_id: nvidia/Qwen3.8-Flash-Next-NVFP4
     served_model_name: qwen3.8-flash-next
     serve_backend: qwen38-flash-next-vllm
     external_recipe: scripts/Qwen38-Flash-Next-vLLM-Dual-DSpark.sh
     upstream_repo: https://github.com/MiaAI-Lab/Qwen3.8-Flash-Next-Dual-DGX-Sparks
-    upstream_revision: 169fbad266f2791335a3102f0d3d625e7c295563
-    model_revision: 7b719225242aacd3dbd3f9407468c2ee9a9d2594
+    upstream_revision: c2325b22602b51a5faf55fc2bebccc34f3f80b9f
+    model_revision: fc694b54fb0174e0913e6adf86691ef85a4ead47
     nodes: 2
     tensor_parallel_size: 2
     expert_parallel: true
     distributed_executor_backend: mp
     runtime: vllm
     runtime_image: vllm/vllm-openai:qwen38-flash-next@sha256:fc120ece0a388cc0aa1caad4a9f1cd92113484ab7ec2fd0efadd62585be05bf8
-    runtime_kernel_patch: ple-fp8-resolver-bind-mount
+    runtime_kernel_patch: ple-fp8-resolver+qsa-fp8-kv-bind-mount
     architecture: qwen4_exp
     parameters_total_billion: 176
     parameters_active_billion: 6
     quantization: modelopt_fp4
     weight_format: nvfp4
-    checkpoint_size_gib: 125.91
+    checkpoint_size_gib: 124
     native_context_len: 262144
     max_model_len: 1000000
     rope_scaling: yarn
@@ -962,10 +962,10 @@ models:
     max_num_batched_tokens: 8192
     gpu_memory_utilization: 0.835
     worker_memory_reserve_gib: 6
-    kv_cache_dtype: bf16
-    measured_kv_cache_gib: 35.11
-    measured_kv_cache_tokens: 2481424
-    measured_full_context_residency: 2.48
+    kv_cache_dtype: fp8
+    measured_kv_cache_gib: 32.02
+    measured_kv_cache_tokens: 3652200
+    measured_full_context_residency: 3.65
     ple_offload: false
     speculative_method: mtp
     speculative_tokens: 3
