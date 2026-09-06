@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Materialize ml-compute's safety/pinning overlay for MiaAI's vLLM launcher."""
+"""Materialize ml-compute's pinning and private-bind overlay for MiaAI vLLM."""
 
 from __future__ import annotations
 
@@ -15,103 +15,94 @@ def replace_once(text: str, old: str, new: str, label: str) -> str:
     return text.replace(old, new, 1)
 
 
-def continued(*lines: str) -> str:
-    """Return shell continuation lines with a trailing newline."""
-    return "\n".join(f"{line} \\" for line in lines) + "\n"
-
-
 def main() -> int:
-    if len(sys.argv) != 3:
-        print(f"usage: {sys.argv[0]} SOURCE DESTINATION", file=sys.stderr)
+    if len(sys.argv) != 5:
+        print(
+            f"usage: {sys.argv[0]} START_SOURCE START_DEST DOWNLOAD_SOURCE DOWNLOAD_DEST",
+            file=sys.stderr,
+        )
         return 2
 
-    source = Path(sys.argv[1])
-    destination = Path(sys.argv[2])
-    text = source.read_text(encoding="utf-8")
-
+    start_source, start_destination, download_source, download_destination = map(
+        Path, sys.argv[1:]
+    )
+    text = start_source.read_text(encoding="utf-8")
     text = replace_once(
         text,
         'HF_TOKEN="${HF_TOKEN:-}"\n',
         'HF_TOKEN="${HF_TOKEN:-}"\n'
         'HF_REVISION="${HF_REVISION:?HF_REVISION must pin the model snapshot}"\n'
-        'HOST_BIND="${HOST_BIND:-127.0.0.1}"\n'
-        'REVISION_ARGS=(--revision "$HF_REVISION")\n',
-        "runtime override",
+        'HOST_BIND="${HOST_BIND:-127.0.0.1}"\n',
+        "runtime overrides",
+    )
+    text = replace_once(
+        text,
+        '    "$SCRIPT_DIR/download.sh" "$MODEL_ID"',
+        '    "$SCRIPT_DIR/download.ml-compute.sh" "$MODEL_ID" "$HF_REVISION"',
+        "pinned downloader call",
+    )
+    text = replace_once(
+        text,
+        '    VLLM_ARGS+=("--served-model-name" "$SERVED_MODEL_NAME")',
+        '    VLLM_ARGS+=("--revision" "$HF_REVISION")\n'
+        '    VLLM_ARGS+=("--served-model-name" "$SERVED_MODEL_NAME")',
+        "vLLM revision",
+    )
+    text = replace_once(
+        text,
+        'PLE_CONFIG_DIR="$MODEL_DIR"\n'
+        'if [[ ! -f "$PLE_CONFIG_DIR/config.json" ]]; then\n'
+        '    PLE_CONFIG_DIR=$(ls -d "$HEAD_MODEL_PATH"/snapshots/*/ 2>/dev/null | head -1)\n'
+        'fi',
+        'PLE_CONFIG_DIR="$MODEL_DIR/snapshots/$HF_REVISION"\n'
+        '[[ -f "$PLE_CONFIG_DIR/config.json" ]] || err "Pinned snapshot missing: $PLE_CONFIG_DIR"',
+        "pinned checkpoint configuration",
+    )
+    text = replace_once(
+        text,
+        "    --host 0.0.0.0 \\\n",
+        "    --host $HOST_BIND \\\n",
+        "head bind",
     )
 
+    uvm_anchor = "    --device /dev/infiniband:/dev/infiniband \\\n"
+    if text.count(uvm_anchor) != 2:
+        raise RuntimeError("expected two infiniband device anchors")
+    text = text.replace(
+        uvm_anchor,
+        uvm_anchor + "    --device /dev/nvidia-uvm --device /dev/nvidia-uvm-tools \\\n",
+    )
+    start_destination.write_text(text, encoding="utf-8")
+    os.chmod(start_destination, start_source.stat().st_mode | 0o100)
+
+    download = download_source.read_text(encoding="utf-8")
+    download = replace_once(
+        download,
+        'MODEL_ID="${MODEL_ID:-RadixArk/Qwen3.8-Flash-Next-NVFP4}"\n',
+        'MODEL_ID="${MODEL_ID:-nvidia/Qwen3.8-Flash-Next-NVFP4}"\n'
+        'HF_REVISION="${2:?model revision is required}"\n'
+        'set -- "$1"\n',
+        "download revision",
+    )
     for command in (
         'HF_HOME="$HF_CACHE_DIR" uvx hf download "$MODEL_ID" --cache-dir "$HUB_PATH"',
         'HF_HOME="$HF_CACHE_DIR" huggingface-cli download "$MODEL_ID" --cache-dir "$HUB_PATH"',
         'HF_HOME="$HF_CACHE_DIR" hf download "$MODEL_ID" --cache-dir "$HUB_PATH"',
     ):
-        text = replace_once(
-            text,
+        download = replace_once(
+            download,
             command,
-            f'{command} "${{REVISION_ARGS[@]}}"',
-            f"{command.split()[0]} download",
+            f'{command} --revision "$HF_REVISION"',
+            "revision-pinned download",
         )
-
-    # In huggingface_hub >= 1.0 the `huggingface-cli` entry point still resolves
-    # (so `command -v` succeeds) but is a dead no-op that exits without
-    # downloading. Only fall into that branch when the working `hf` CLI is
-    # absent, so modern hosts drop through to the `hf download` branch below.
-    text = replace_once(
-        text,
+    download = replace_once(
+        download,
         "elif command -v huggingface-cli &>/dev/null; then",
         "elif command -v huggingface-cli &>/dev/null && ! command -v hf &>/dev/null; then",
-        "huggingface-cli download guard",
+        "huggingface-cli guard",
     )
-
-    # Some hosts' NVIDIA container runtime whitelists the wrong nvidia-uvm major
-    # in the container device cgroup, so CUDA's cuInit() is denied /dev/nvidia-uvm
-    # (nvidia-smi/NVML still work, masking it) and the worker dies at init_device.
-    # Pass the uvm devices explicitly so the correct major lands in both the node
-    # and the cgroup, on head and worker alike.
-    uvm_anchor = "    --device /dev/infiniband:/dev/infiniband \\\n"
-    uvm_count = text.count(uvm_anchor)
-    if uvm_count != 2:
-        raise RuntimeError(f"expected two infiniband device anchors, found {uvm_count}")
-    text = text.replace(
-        uvm_anchor,
-        uvm_anchor + "    --device /dev/nvidia-uvm --device /dev/nvidia-uvm-tools \\\n",
-    )
-
-    text = replace_once(
-        text,
-        'HEAD_HAS=$( [[ -d "$HUB_PATH/models--${ORG}--${NAME}" ]] && echo 1 || echo 0 )',
-        'HEAD_HAS=$( [[ -f "$HUB_PATH/models--${ORG}--${NAME}/snapshots/$HF_REVISION/config.json" ]] && echo 1 || echo 0 )',
-        "head snapshot detection",
-    )
-    text = replace_once(
-        text,
-        'WORKER_HAS=$(ssh_worker "test -d \'$REMOTE_HUB/models--${ORG}--${NAME}\' && echo 1 || echo 0" 2>/dev/null || echo 0)',
-        'WORKER_HAS=$(ssh_worker "test -f \'$REMOTE_HUB/models--${ORG}--${NAME}/snapshots/$HF_REVISION/config.json\' && echo 1 || echo 0" 2>/dev/null || echo 0)',
-        "worker snapshot detection",
-    )
-
-    model_anchor = continued(
-        "    $MODEL_ID",
-        "    --served-model-name $SERVED_MODEL_NAME",
-    )
-    pinned_model_anchor = continued(
-        "    $MODEL_ID",
-        "    --revision $HF_REVISION",
-        "    --served-model-name $SERVED_MODEL_NAME",
-    )
-    count = text.count(model_anchor)
-    if count != 2:
-        raise RuntimeError(f"expected two vLLM model anchors, found {count}")
-    text = text.replace(model_anchor, pinned_model_anchor)
-
-    text = replace_once(
-        text,
-        continued("    --host 0.0.0.0"),
-        continued("    --host $HOST_BIND"),
-        "head bind",
-    )
-
-    destination.write_text(text, encoding="utf-8")
-    os.chmod(destination, source.stat().st_mode | 0o100)
+    download_destination.write_text(download, encoding="utf-8")
+    os.chmod(download_destination, download_source.stat().st_mode | 0o100)
     return 0
 
 

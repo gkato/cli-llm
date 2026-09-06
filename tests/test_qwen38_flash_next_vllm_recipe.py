@@ -45,12 +45,15 @@ class Qwen38FlashNextVllmRecipeTests(unittest.TestCase):
         self.assertEqual(profile["GPU_MEMORY_UTILIZATION"], "0.835")
         self.assertEqual(profile["MAX_NUM_SEQS"], "8")
         self.assertEqual(profile["MAX_NUM_BATCHED_TOKENS"], "8192")
-        self.assertEqual(profile["KV_CACHE_DTYPE"], "auto")
+        self.assertEqual(profile["MODEL_ID"], "nvidia/Qwen3.8-Flash-Next-NVFP4")
+        self.assertEqual(profile["KV_CACHE_DTYPE"], "fp8")
+        self.assertEqual(profile["MTP_DRAFT_VOCAB"], "")
+        self.assertEqual(profile["NFS_SHARE"], "false")
         self.assertEqual(profile["PLE_OFFLOAD"], "false")
         self.assertEqual(profile["QWEN38_VLLM_MIN_RUNTIME_AVAILABLE_GIB"], "6")
         self.assertEqual(
             profile["MODEL_REVISION"],
-            "7b719225242aacd3dbd3f9407468c2ee9a9d2594",
+            "fc694b54fb0174e0913e6adf86691ef85a4ead47",
         )
         self.assertIn("@sha256:", profile["VLLM_IMAGE"])
 
@@ -66,13 +69,14 @@ class Qwen38FlashNextVllmRecipeTests(unittest.TestCase):
         self.assertEqual(model["max_num_batched_tokens"], 8192)
         self.assertEqual(model["gpu_memory_utilization"], 0.835)
         self.assertEqual(model["worker_memory_reserve_gib"], 6)
-        self.assertEqual(model["kv_cache_dtype"], "bf16")
-        self.assertEqual(model["measured_kv_cache_tokens"], 2481424)
+        self.assertEqual(model["hf_id"], "nvidia/Qwen3.8-Flash-Next-NVFP4")
+        self.assertEqual(model["kv_cache_dtype"], "fp8")
+        self.assertEqual(model["measured_kv_cache_tokens"], 3652200)
         self.assertEqual(model["speculative_method"], "mtp")
         self.assertEqual(model["speculative_tokens"], 3)
         self.assertEqual(
             model["upstream_revision"],
-            "169fbad266f2791335a3102f0d3d625e7c295563",
+            "c2325b22602b51a5faf55fc2bebccc34f3f80b9f",
         )
         self.assertIn("@sha256:", model["runtime_image"])
         self.assertEqual(model["raw_api_url"], "http://127.0.0.1:8888")
@@ -81,17 +85,17 @@ class Qwen38FlashNextVllmRecipeTests(unittest.TestCase):
         script = SCRIPT.read_text(encoding="utf-8")
 
         self.assertIn(
-            'UPSTREAM_REVISION_DEFAULT="169fbad266f2791335a3102f0d3d625e7c295563"',
+            'UPSTREAM_REVISION_DEFAULT="c2325b22602b51a5faf55fc2bebccc34f3f80b9f"',
             script,
         )
         self.assertIn(
-            'MODEL_REVISION_DEFAULT="7b719225242aacd3dbd3f9407468c2ee9a9d2594"',
+            'MODEL_REVISION_DEFAULT="fc694b54fb0174e0913e6adf86691ef85a4ead47"',
             script,
         )
         self.assertIn("VLLM_IMAGE_DEFAULT=", script)
         self.assertIn('[[ "${GPU_MEMORY_UTILIZATION}" == "0.835" ]]', script)
         self.assertIn('[[ "${MAX_NUM_BATCHED_TOKENS}" == "8192" ]]', script)
-        self.assertIn('[[ "${KV_CACHE_DTYPE}" == "auto" ]]', script)
+        self.assertIn('[[ "${KV_CACHE_DTYPE}" == "fp8" ]]', script)
         self.assertIn('[[ "${PLE_OFFLOAD}" == "false" ]]', script)
         self.assertIn("materialize_launcher", script)
         self.assertIn("resolve_cluster_interfaces", script)
@@ -109,30 +113,35 @@ class Qwen38FlashNextVllmRecipeTests(unittest.TestCase):
         self.assertIn("run_proxy_cli smoke", script)
         self.assertIn("Tailscale Funnel targets raw vLLM port", script)
 
-    def test_launcher_overlay_only_adds_pin_and_private_bind_controls(self):
+    def test_launcher_overlay_adds_pin_private_bind_and_pinned_downloader(self):
         slash = "\\"
         fixture = """#!/usr/bin/env bash
 HF_TOKEN="${HF_TOKEN:-}"
-HEAD_HAS=$( [[ -d "$HUB_PATH/models--${ORG}--${NAME}" ]] && echo 1 || echo 0 )
-WORKER_HAS=$(ssh_worker "test -d '$REMOTE_HUB/models--${ORG}--${NAME}' && echo 1 || echo 0" 2>/dev/null || echo 0)
-HF_HOME="$HF_CACHE_DIR" uvx hf download "$MODEL_ID" --cache-dir "$HUB_PATH"
-    elif command -v huggingface-cli &>/dev/null; then
-HF_HOME="$HF_CACHE_DIR" huggingface-cli download "$MODEL_ID" --cache-dir "$HUB_PATH"
-HF_HOME="$HF_CACHE_DIR" hf download "$MODEL_ID" --cache-dir "$HUB_PATH"
+    "$SCRIPT_DIR/download.sh" "$MODEL_ID"
+PLE_CONFIG_DIR="$MODEL_DIR"
+if [[ ! -f "$PLE_CONFIG_DIR/config.json" ]]; then
+    PLE_CONFIG_DIR=$(ls -d "$HEAD_MODEL_PATH"/snapshots/*/ 2>/dev/null | head -1)
+fi
+    VLLM_ARGS+=("--served-model-name" "$SERVED_MODEL_NAME")
     --device /dev/infiniband:/dev/infiniband __SLASH__
-    $MODEL_ID __SLASH__
-    --served-model-name $SERVED_MODEL_NAME __SLASH__
     --device /dev/infiniband:/dev/infiniband __SLASH__
-    $MODEL_ID __SLASH__
-    --served-model-name $SERVED_MODEL_NAME __SLASH__
     --host 0.0.0.0 __SLASH__
 """.replace("__SLASH__", slash)
+        download_fixture = '''MODEL_ID="${MODEL_ID:-RadixArk/Qwen3.8-Flash-Next-NVFP4}"
+HF_HOME="$HF_CACHE_DIR" uvx hf download "$MODEL_ID" --cache-dir "$HUB_PATH"
+elif command -v huggingface-cli &>/dev/null; then
+HF_HOME="$HF_CACHE_DIR" huggingface-cli download "$MODEL_ID" --cache-dir "$HUB_PATH"
+HF_HOME="$HF_CACHE_DIR" hf download "$MODEL_ID" --cache-dir "$HUB_PATH"
+'''
         with tempfile.TemporaryDirectory() as tmp:
             source = Path(tmp) / "start.sh"
             destination = Path(tmp) / "start.ml-compute.sh"
+            download_source = Path(tmp) / "download.sh"
+            download_destination = Path(tmp) / "download.ml-compute.sh"
             source.write_text(fixture, encoding="utf-8")
+            download_source.write_text(download_fixture, encoding="utf-8")
             result = subprocess.run(
-                [str(PATCHER), str(source), str(destination)],
+                [str(PATCHER), str(source), str(destination), str(download_source), str(download_destination)],
                 check=False,
                 capture_output=True,
                 text=True,
@@ -141,14 +150,17 @@ HF_HOME="$HF_CACHE_DIR" hf download "$MODEL_ID" --cache-dir "$HUB_PATH"
             self.assertEqual(result.returncode, 0, result.stderr)
             patched = destination.read_text(encoding="utf-8")
             self.assertIn("HF_REVISION must pin the model snapshot", patched)
-            self.assertEqual(patched.count("--revision $HF_REVISION"), 2)
+            self.assertIn('VLLM_ARGS+=("--revision" "$HF_REVISION")', patched)
+            self.assertIn("download.ml-compute.sh", patched)
+            self.assertIn('PLE_CONFIG_DIR="$MODEL_DIR/snapshots/$HF_REVISION"', patched)
             self.assertIn("--host $HOST_BIND", patched)
             self.assertNotIn("--host 0.0.0.0", patched)
-            self.assertIn("snapshots/$HF_REVISION/config.json", patched)
+            patched_download = download_destination.read_text(encoding="utf-8")
+            self.assertEqual(patched_download.count('--revision "$HF_REVISION"'), 3)
             self.assertIn(
                 "elif command -v huggingface-cli &>/dev/null "
                 "&& ! command -v hf &>/dev/null; then",
-                patched,
+                patched_download,
             )
             # Both docker runs must gain explicit uvm device access so a wrong
             # uvm major in the container device cgroup can't block cuInit().

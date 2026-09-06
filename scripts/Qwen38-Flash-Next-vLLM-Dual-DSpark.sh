@@ -12,8 +12,8 @@ set -Eeuo pipefail
 
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 UPSTREAM_REPO_DEFAULT="https://github.com/MiaAI-Lab/Qwen3.8-Flash-Next-Dual-DGX-Sparks.git"
-UPSTREAM_REVISION_DEFAULT="169fbad266f2791335a3102f0d3d625e7c295563"
-MODEL_REVISION_DEFAULT="7b719225242aacd3dbd3f9407468c2ee9a9d2594"
+UPSTREAM_REVISION_DEFAULT="c2325b22602b51a5faf55fc2bebccc34f3f80b9f"
+MODEL_REVISION_DEFAULT="fc694b54fb0174e0913e6adf86691ef85a4ead47"
 VLLM_IMAGE_DEFAULT="vllm/vllm-openai:qwen38-flash-next@sha256:fc120ece0a388cc0aa1caad4a9f1cd92113484ab7ec2fd0efadd62585be05bf8"
 RUNTIME_DIR_DEFAULT="${PROJECT_ROOT}/data/dspark/qwen38-flash-next-vllm"
 RECIPE_DIR_DEFAULT="${RUNTIME_DIR_DEFAULT}/miaai-vllm-dual-spark"
@@ -28,6 +28,7 @@ RECIPE_DIR="${QWEN38_VLLM_RECIPE_DIR:-${RECIPE_DIR_DEFAULT}}"
 PROFILE_FILE="${QWEN38_VLLM_CONFIG_FILE:-${PROFILE_FILE_DEFAULT}}"
 PROJECT_ENV_FILE="${QWEN38_VLLM_PROJECT_ENV_FILE:-${PROJECT_ENV_FILE_DEFAULT}}"
 GENERATED_LAUNCHER="${RECIPE_DIR}/start.ml-compute.sh"
+GENERATED_DOWNLOADER="${RECIPE_DIR}/download.ml-compute.sh"
 
 log() { printf '[qwen38-flash-next-vllm] %s\n' "$*"; }
 warn() { printf '[qwen38-flash-next-vllm] WARNING: %s\n' "$*" >&2; }
@@ -66,7 +67,7 @@ Actions:
 
 MiaAI performance profile (kept unchanged):
   - vLLM TP=2 + expert parallel + MTP3 on two GB10 nodes
-  - 1,000,000-token YaRN context, BF16 KV, 0.835 GPU memory utilization
+  - 1,000,000-token YaRN context, FP8 KV, 0.835 GPU memory utilization
   - 8 sequences, 8192 batched tokens, FULL_DECODE_ONLY CUDA graphs
   - GPU-resident FP8 PLE shim; PLE CPU offload disabled
   - qwen3 reasoning and qwen3_coder tool parsing
@@ -129,7 +130,7 @@ HOST_BIND|127.0.0.1
 PORT|8888
 DSPARK_PROXY_HOST|0.0.0.0
 DSPARK_PROXY_PORT|8000
-MODEL_ID|RadixArk/Qwen3.8-Flash-Next-NVFP4
+MODEL_ID|nvidia/Qwen3.8-Flash-Next-NVFP4
 MODEL_REVISION|${MODEL_REVISION_DEFAULT}
 SERVED_MODEL_NAME|qwen3.8-flash-next
 VLLM_IMAGE|${VLLM_IMAGE_DEFAULT}
@@ -143,8 +144,14 @@ VLLM_ALLOW_LONG_MAX_MODEL_LEN|1
 GPU_MEMORY_UTILIZATION|0.835
 MAX_NUM_SEQS|8
 MAX_NUM_BATCHED_TOKENS|8192
-KV_CACHE_DTYPE|auto
+KV_CACHE_DTYPE|fp8
 PLE_OFFLOAD|false
+MM_ENCODER_TP_MODE|data
+MTP_DRAFT_VOCAB|
+FP8_DENSE|false
+QSA_PROFILE|stock
+REQUIRE_IDLE_GPU|true
+NFS_SHARE|false
 HF_HOME|${RUNTIME_DIR}/cache/huggingface
 WORKER_HF_HOME|
 WAIT_TIMEOUT_MIN|90
@@ -258,7 +265,15 @@ validate_profile() {
   [[ "${GPU_MEMORY_UTILIZATION}" == "0.835" ]] || die "GPU_MEMORY_UTILIZATION must remain 0.835"
   [[ "${MAX_NUM_SEQS}" == "8" ]] || die "MAX_NUM_SEQS must remain 8"
   [[ "${MAX_NUM_BATCHED_TOKENS}" == "8192" ]] || die "MAX_NUM_BATCHED_TOKENS must remain 8192"
-  [[ "${KV_CACHE_DTYPE}" == "auto" ]] || die "KV_CACHE_DTYPE must remain auto (BF16)"
+  [[ "${MODEL_ID}" == "nvidia/Qwen3.8-Flash-Next-NVFP4" ]] \
+    || die "MODEL_ID must remain the reviewed NVIDIA NVFP4 checkpoint"
+  [[ "${KV_CACHE_DTYPE}" == "fp8" ]] || die "KV_CACHE_DTYPE must remain fp8"
+  [[ "${MM_ENCODER_TP_MODE}" == "data" ]] || die "Vision encoder must remain replicated"
+  [[ -z "${MTP_DRAFT_VOCAB}" ]] || die "Reduced MTP vocabulary remains disabled pending validation"
+  [[ "${FP8_DENSE}" == "false" && "${QSA_PROFILE}" == "stock" ]] \
+    || die "Experimental dense/QSA profiles remain disabled"
+  [[ "${REQUIRE_IDLE_GPU}" == "true" ]] || die "GPU-idle preflight must remain enabled"
+  [[ "${NFS_SHARE}" == "false" ]] || die "NFS weight sharing remains disabled"
   [[ "${PLE_OFFLOAD}" == "false" ]] \
     || die "PLE_OFFLOAD must remain false; MiaAI measured insufficient GB10 host headroom"
   [[ -z "${EXTRA_VLLM_ARGS}" && -z "${EXTRA_DOCKER_ARGS}" ]] \
@@ -318,8 +333,11 @@ materialize_launcher() {
   local python
   python="$(project_python)"
   [[ -x "${PATCHER}" || -f "${PATCHER}" ]] || die "Missing launcher patcher: ${PATCHER}"
-  "${python}" "${PATCHER}" "${RECIPE_DIR}/start.sh" "${GENERATED_LAUNCHER}"
+  "${python}" "${PATCHER}" \
+    "${RECIPE_DIR}/start.sh" "${GENERATED_LAUNCHER}" \
+    "${RECIPE_DIR}/download.sh" "${GENERATED_DOWNLOADER}"
   bash -n "${GENERATED_LAUNCHER}" || die "Generated vLLM launcher is invalid"
+  bash -n "${GENERATED_DOWNLOADER}" || die "Generated vLLM downloader is invalid"
 }
 
 configure() {
@@ -356,6 +374,12 @@ configure() {
     printf 'MTP_NUM_SPECULATIVE_TOKENS=%q\n' "${MTP_NUM_SPECULATIVE_TOKENS}"
     printf 'IMAGE=%q\n' "${VLLM_IMAGE}"
     printf 'PLE_OFFLOAD=%q\n' "${PLE_OFFLOAD}"
+    printf 'MM_ENCODER_TP_MODE=%q\n' "${MM_ENCODER_TP_MODE}"
+    printf 'MTP_DRAFT_VOCAB=%q\n' "${MTP_DRAFT_VOCAB}"
+    printf 'FP8_DENSE=%q\n' "${FP8_DENSE}"
+    printf 'QSA_PROFILE=%q\n' "${QSA_PROFILE}"
+    printf 'REQUIRE_IDLE_GPU=%q\n' "${REQUIRE_IDLE_GPU}"
+    printf 'NFS_SHARE=%q\n' "${NFS_SHARE}"
     printf 'HF_HOME=%q\n' "${HF_HOME}"
     printf 'WORKER_HF_HOME=%q\n' "${WORKER_HF_HOME}"
     printf 'EXTRA_VLLM_ARGS=%q\n' "${EXTRA_VLLM_ARGS}"
