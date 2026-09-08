@@ -12,7 +12,7 @@ set -Eeuo pipefail
 
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 UPSTREAM_REPO_DEFAULT="https://github.com/MiaAI-Lab/Qwen3.8-Flash-Next-Dual-DGX-Sparks.git"
-UPSTREAM_REVISION_DEFAULT="c2325b22602b51a5faf55fc2bebccc34f3f80b9f"
+UPSTREAM_REVISION_DEFAULT="0b62e126703cd05c1bda3926e7d602f21193147c"
 MODEL_REVISION_DEFAULT="fc694b54fb0174e0913e6adf86691ef85a4ead47"
 VLLM_IMAGE_DEFAULT="vllm/vllm-openai:qwen38-flash-next@sha256:fc120ece0a388cc0aa1caad4a9f1cd92113484ab7ec2fd0efadd62585be05bf8"
 RUNTIME_DIR_DEFAULT="${PROJECT_ROOT}/data/dspark/qwen38-flash-next-vllm"
@@ -152,6 +152,8 @@ FP8_DENSE|false
 QSA_PROFILE|stock
 REQUIRE_IDLE_GPU|true
 NFS_SHARE|false
+MAMBA_SSM_CACHE_DTYPE|
+ABLIT|0
 HF_HOME|${RUNTIME_DIR}/cache/huggingface
 WORKER_HF_HOME|
 WAIT_TIMEOUT_MIN|90
@@ -274,6 +276,8 @@ validate_profile() {
     || die "Experimental dense/QSA profiles remain disabled"
   [[ "${REQUIRE_IDLE_GPU}" == "true" ]] || die "GPU-idle preflight must remain enabled"
   [[ "${NFS_SHARE}" == "false" ]] || die "NFS weight sharing remains disabled"
+  [[ -z "${MAMBA_SSM_CACHE_DTYPE}" ]] || die "Mamba SSM BF16 remains opt-in pending dual-Spark validation"
+  [[ "${ABLIT}" == "0" ]] || die "ABLIT must remain disabled for the pinned NVIDIA checkpoint"
   [[ "${PLE_OFFLOAD}" == "false" ]] \
     || die "PLE_OFFLOAD must remain false; MiaAI measured insufficient GB10 host headroom"
   [[ -z "${EXTRA_VLLM_ARGS}" && -z "${EXTRA_DOCKER_ARGS}" ]] \
@@ -380,6 +384,8 @@ configure() {
     printf 'QSA_PROFILE=%q\n' "${QSA_PROFILE}"
     printf 'REQUIRE_IDLE_GPU=%q\n' "${REQUIRE_IDLE_GPU}"
     printf 'NFS_SHARE=%q\n' "${NFS_SHARE}"
+    printf 'MAMBA_SSM_CACHE_DTYPE=%q\n' "${MAMBA_SSM_CACHE_DTYPE}"
+    printf 'ABLIT=%q\n' "${ABLIT}"
     printf 'HF_HOME=%q\n' "${HF_HOME}"
     printf 'WORKER_HF_HOME=%q\n' "${WORKER_HF_HOME}"
     printf 'EXTRA_VLLM_ARGS=%q\n' "${EXTRA_VLLM_ARGS}"
@@ -471,7 +477,7 @@ run_launcher() {
   check_recipe_pin
   validate_profile
   [[ -x "${GENERATED_LAUNCHER}" ]] || die "Run configure before launching"
-  (cd "${RECIPE_DIR}" && "${GENERATED_LAUNCHER}" "$@")
+  (cd "${RECIPE_DIR}" && env -u ABLIT "${GENERATED_LAUNCHER}" "$@")
 }
 
 worker_hf_home() {
@@ -635,7 +641,7 @@ start_service() {
     drop_page_caches
     check_launch_memory
     if command -v timeout >/dev/null 2>&1; then
-      (cd "${RECIPE_DIR}" && timeout "${WAIT_TIMEOUT_MIN}m" "${GENERATED_LAUNCHER}" --launch) \
+      (cd "${RECIPE_DIR}" && env -u ABLIT timeout "${WAIT_TIMEOUT_MIN}m" "${GENERATED_LAUNCHER}" --launch) \
         || { stop_raw_containers; die "MiaAI vLLM launcher failed or timed out"; }
     else
       run_launcher --launch
