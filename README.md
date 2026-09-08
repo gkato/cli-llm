@@ -407,7 +407,7 @@ python3 -m ml.cli qwen38-flash-next stop
 MiaAI replaced its Qwen repository history with a new vLLM implementation.
 ml-compute exposes that implementation as a separate backend so the proven
 SGLang/NVFP4-KV path remains available. The new recipe pins MiaAI revision
-`c2325b22602b51a5faf55fc2bebccc34f3f80b9f`, the NVIDIA NVFP4 model snapshot,
+`0b62e126703cd05c1bda3926e7d602f21193147c`, the NVIDIA NVFP4 model snapshot,
 and the multi-architecture vLLM image digest.
 
 The execution profile uses multiprocessing TP=2, expert parallel, MTP3,

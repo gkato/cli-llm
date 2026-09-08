@@ -49,6 +49,7 @@ class Qwen38FlashNextVllmRecipeTests(unittest.TestCase):
         self.assertEqual(profile["KV_CACHE_DTYPE"], "fp8")
         self.assertEqual(profile["MTP_DRAFT_VOCAB"], "")
         self.assertEqual(profile["NFS_SHARE"], "false")
+        self.assertEqual(profile["ABLIT"], "0")
         self.assertEqual(profile["PLE_OFFLOAD"], "false")
         self.assertEqual(profile["QWEN38_VLLM_MIN_RUNTIME_AVAILABLE_GIB"], "6")
         self.assertEqual(
@@ -76,7 +77,7 @@ class Qwen38FlashNextVllmRecipeTests(unittest.TestCase):
         self.assertEqual(model["speculative_tokens"], 3)
         self.assertEqual(
             model["upstream_revision"],
-            "c2325b22602b51a5faf55fc2bebccc34f3f80b9f",
+            "0b62e126703cd05c1bda3926e7d602f21193147c",
         )
         self.assertIn("@sha256:", model["runtime_image"])
         self.assertEqual(model["raw_api_url"], "http://127.0.0.1:8888")
@@ -85,7 +86,7 @@ class Qwen38FlashNextVllmRecipeTests(unittest.TestCase):
         script = SCRIPT.read_text(encoding="utf-8")
 
         self.assertIn(
-            'UPSTREAM_REVISION_DEFAULT="c2325b22602b51a5faf55fc2bebccc34f3f80b9f"',
+            'UPSTREAM_REVISION_DEFAULT="0b62e126703cd05c1bda3926e7d602f21193147c"',
             script,
         )
         self.assertIn(
@@ -97,6 +98,7 @@ class Qwen38FlashNextVllmRecipeTests(unittest.TestCase):
         self.assertIn('[[ "${MAX_NUM_BATCHED_TOKENS}" == "8192" ]]', script)
         self.assertIn('[[ "${KV_CACHE_DTYPE}" == "fp8" ]]', script)
         self.assertIn('[[ "${PLE_OFFLOAD}" == "false" ]]', script)
+        self.assertIn('env -u ABLIT', script)
         self.assertIn("materialize_launcher", script)
         self.assertIn("resolve_cluster_interfaces", script)
         self.assertIn("verify_model_snapshot", script)
@@ -116,22 +118,27 @@ class Qwen38FlashNextVllmRecipeTests(unittest.TestCase):
     def test_launcher_overlay_adds_pin_private_bind_and_pinned_downloader(self):
         slash = "\\"
         fixture = """#!/usr/bin/env bash
+EXTRA_VLLM_ARGS="${EXTRA_VLLM_ARGS:-}"
+EXTRA_DOCKER_ARGS="${EXTRA_DOCKER_ARGS:-}"
 HF_TOKEN="${HF_TOKEN:-}"
     "$SCRIPT_DIR/download.sh" "$MODEL_ID"
-PLE_CONFIG_DIR="$MODEL_DIR"
+PLE_CONFIG_DIR="$HEAD_MODEL_PATH/snapshots/$SNAP"
+if [[ ! -f "$PLE_CONFIG_DIR/config.json" && -f "$MODEL_DIR/config.json" ]]; then
+    PLE_CONFIG_DIR="$MODEL_DIR"
+fi
 if [[ ! -f "$PLE_CONFIG_DIR/config.json" ]]; then
-    PLE_CONFIG_DIR=$(ls -d "$HEAD_MODEL_PATH"/snapshots/*/ 2>/dev/null | head -1)
+    err "snapshot $SNAP has no config.json (partial download). Delete $PLE_CONFIG_DIR and re-run ./download.sh $MODEL_ID."
 fi
     VLLM_ARGS+=("--served-model-name" "$SERVED_MODEL_NAME")
     --device /dev/infiniband:/dev/infiniband __SLASH__
     --device /dev/infiniband:/dev/infiniband __SLASH__
     --host 0.0.0.0 __SLASH__
 """.replace("__SLASH__", slash)
-        download_fixture = '''MODEL_ID="${MODEL_ID:-RadixArk/Qwen3.8-Flash-Next-NVFP4}"
-HF_HOME="$HF_CACHE_DIR" uvx hf download "$MODEL_ID" --cache-dir "$HUB_PATH"
+        download_fixture = '''MODEL_ID="${MODEL_ID:-nvidia/Qwen3.8-Flash-Next-NVFP4}"
+            uvx hf download "$MODEL_ID" --cache-dir "$HUB_PATH"
 elif command -v huggingface-cli &>/dev/null; then
-HF_HOME="$HF_CACHE_DIR" huggingface-cli download "$MODEL_ID" --cache-dir "$HUB_PATH"
-HF_HOME="$HF_CACHE_DIR" hf download "$MODEL_ID" --cache-dir "$HUB_PATH"
+            huggingface-cli download "$MODEL_ID" --cache-dir "$HUB_PATH"
+            hf download "$MODEL_ID" --cache-dir "$HUB_PATH"
 '''
         with tempfile.TemporaryDirectory() as tmp:
             source = Path(tmp) / "start.sh"
@@ -152,7 +159,7 @@ HF_HOME="$HF_CACHE_DIR" hf download "$MODEL_ID" --cache-dir "$HUB_PATH"
             self.assertIn("HF_REVISION must pin the model snapshot", patched)
             self.assertIn('VLLM_ARGS+=("--revision" "$HF_REVISION")', patched)
             self.assertIn("download.ml-compute.sh", patched)
-            self.assertIn('PLE_CONFIG_DIR="$MODEL_DIR/snapshots/$HF_REVISION"', patched)
+            self.assertIn('PLE_CONFIG_DIR="$HEAD_MODEL_PATH/snapshots/$HF_REVISION"', patched)
             self.assertIn("--host $HOST_BIND", patched)
             self.assertNotIn("--host 0.0.0.0", patched)
             patched_download = download_destination.read_text(encoding="utf-8")
