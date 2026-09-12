@@ -39,16 +39,25 @@ class GLM53FlashRecipeTests(unittest.TestCase):
         self.assertEqual(profile["DSPARK_PROXY_PORT"], "8000")
         self.assertEqual(profile["MODEL_ID"], "brandonmusic/GLM-5.3-Flash-tr3-4bpw")
         self.assertEqual(profile["QUANTIZATION"], "exl3")
-        self.assertEqual(profile["MAX_MODEL_LEN"], "1000000")
+        self.assertEqual(profile["MAX_MODEL_LEN"], "850000")
         self.assertEqual(profile["MAX_NUM_SEQS"], "4")
-        self.assertEqual(profile["MAX_NUM_BATCHED_TOKENS"], "2048")
-        self.assertEqual(profile["GPU_MEMORY_UTILIZATION"], "0.87")
+        self.assertEqual(profile["MAX_NUM_BATCHED_TOKENS"], "7168")
+        self.assertEqual(profile["GPU_MEMORY_UTILIZATION"], "0.85")
         self.assertEqual(profile["KV_CACHE_DTYPE"], "fp8")
         self.assertEqual(profile["ENFORCE_EAGER"], "0")
         self.assertEqual(profile["EXL3_FUSED_MOE"], "1")
+        self.assertEqual(profile["EXL3_FAT_KERNEL"], "1")
+        self.assertEqual(profile["EXL3_FAT_GROUPED"], "1")
+        self.assertEqual(profile["EXL3_TEMP_ROWS_FUSED"], "32")
         self.assertEqual(profile["ENABLE_PREFIX_CACHING"], "1")
         self.assertEqual(profile["GLM53_SUPPRESS_STOPS_IN_REASONING"], "1")
         self.assertEqual(profile["GLM53_MIXED_PREFILL_CHUNK"], "skip")
+        self.assertEqual(profile["GLM53_INDEXER_WORKSPACE"], "rightsize")
+        self.assertEqual(profile["GLM53_SPINWAIT_MS"], "stock")
+        self.assertEqual(profile["GLM53_ADAPTIVE_K"], "off")
+        self.assertEqual(profile["GLM53_DENSE_FP8"], "off")
+        self.assertEqual(profile["GLM53_APC_RETENTION_INTERVAL"], "")
+        self.assertEqual(profile["GLM53_APC_RETENTION_INTERVAL_SWA"], "")
         self.assertEqual(profile["VLLM_EXECUTE_MODEL_TIMEOUT_SECONDS"], "1800")
         self.assertEqual(profile["GLM53_BOOT_SHAPE_WARMUP"], "1")
         self.assertEqual(profile["GLM53_WARMUP_REQ_TIMEOUT"], "240")
@@ -67,13 +76,17 @@ class GLM53FlashRecipeTests(unittest.TestCase):
         self.assertEqual(profile["WORKER_GID"], "")
         self.assertEqual(
             profile["VLLM_IMAGE"],
-            "ml-compute/glm53-flash-exl3:mp-dflash2-v4-b5ab809",
+            "ml-compute/glm53-flash-exl3:mp-dflash2-v5-9348755",
         )
-        self.assertIn("@sha256:", profile["VLLM_SOURCE_IMAGE"])
+        self.assertEqual(
+            profile["VLLM_SOURCE_IMAGE"],
+            "ghcr.io/miaai-lab/glm-5.3-flash-2x-dgx-sparks@sha256:"
+            "eecb36e14dc34c92d46827fde7b09f7e0bf27e27c426ece126376c02dea6cd2f",
+        )
         self.assertIn("@sha256:", profile["VLLM_BASE_IMAGE"])
         self.assertNotIn("RAY_VERSION", profile)
         self.assertNotIn("RAY_OBJECT_STORE_MEMORY", profile)
-        self.assertEqual(profile["GLM53_MIN_AVAILABLE_GIB"], "112")
+        self.assertEqual(profile["GLM53_MIN_AVAILABLE_GIB"], "111")
         self.assertEqual(profile["GLM53_MIN_DISK_GIB"], "220")
 
     def test_registry_matches_pinned_miaai_recipe(self):
@@ -85,20 +98,23 @@ class GLM53FlashRecipeTests(unittest.TestCase):
         self.assertEqual(model["distributed_executor_backend"], "mp")
         self.assertEqual(model["runtime"], "vllm")
         self.assertEqual(model["hf_id"], "brandonmusic/GLM-5.3-Flash-tr3-4bpw")
-        self.assertEqual(model["max_model_len"], 1000000)
+        self.assertEqual(model["max_model_len"], 850000)
         self.assertEqual(model["max_num_seqs"], 4)
-        self.assertEqual(model["max_num_batched_tokens"], 2048)
+        self.assertEqual(model["max_num_batched_tokens"], 7168)
         self.assertEqual(model["checkpoint_size_gib"], 164)
-        self.assertEqual(model["gpu_memory_utilization"], 0.87)
+        self.assertEqual(model["gpu_memory_utilization"], 0.85)
         self.assertEqual(model["quantization"], "exl3")
-        self.assertEqual(model["moe_backend"], "exl3_fused")
+        self.assertEqual(model["moe_backend"], "exl3_e3_grouped")
+        self.assertTrue(model["exl3_fat_grouped"])
+        self.assertEqual(model["exl3_temp_rows_fused"], 32)
+        self.assertEqual(model["indexer_workspace"], "rightsize")
         self.assertFalse(model["enforce_eager"])
         self.assertTrue(model["cuda_graphs"])
         self.assertFalse(model["experimental"])
         self.assertTrue(model["verified_on_gb10"])
         self.assertEqual(
             model["upstream_revision"],
-            "b5ab8091dec88e324c943deb96c2dfd957db9f36",
+            "9348755653f6f8cda5d56562c05462724c40fcbd",
         )
         self.assertEqual(
             model["model_revision"],
@@ -106,12 +122,16 @@ class GLM53FlashRecipeTests(unittest.TestCase):
         )
         self.assertEqual(
             model["runtime_image"],
-            "ml-compute/glm53-flash-exl3:mp-dflash2-v4-b5ab809",
+            "ml-compute/glm53-flash-exl3:mp-dflash2-v5-9348755",
         )
-        self.assertIn("@sha256:", model["runtime_source_image"])
+        self.assertEqual(
+            model["runtime_source_image"],
+            "ghcr.io/miaai-lab/glm-5.3-flash-2x-dgx-sparks@sha256:"
+            "eecb36e14dc34c92d46827fde7b09f7e0bf27e27c426ece126376c02dea6cd2f",
+        )
         self.assertEqual(
             model["runtime_kernel_patch"],
-            "exl3-sm121-dflash2-slotshare-apc-xgrammar-kpool-overlay",
+            "exl3-e3-grouped-sm121-dflash2-indexer-rightsize-apc-overlay",
         )
         self.assertEqual(model["dflash_kv_slot_sharing"], "padded_mla")
         self.assertEqual(model["mixed_prefill_policy"], "skip")
@@ -122,6 +142,8 @@ class GLM53FlashRecipeTests(unittest.TestCase):
         self.assertTrue(model["kpool_tail_slotmap_patch"])
         self.assertTrue(model["per_rank_roce_gid"])
         self.assertFalse(model["abliteration"])
+        self.assertFalse(model["adaptive_verification"])
+        self.assertFalse(model["dense_fp8"])
         self.assertTrue(model["worker_startup_fail_fast"])
         self.assertEqual(
             model["worker_cuda_device_passthrough"],
@@ -130,6 +152,10 @@ class GLM53FlashRecipeTests(unittest.TestCase):
         self.assertEqual(model["speculative_method"], "dflash")
         self.assertEqual(model["speculative_tokens"], 7)
         self.assertEqual(model["speculative_draft_tensor_parallel_size"], 2)
+        self.assertEqual(
+            model["speculative_draft_revision"],
+            "dc77ff1c99eeb2df044ee3d4f0094eb033fee410",
+        )
         self.assertEqual(model["speculative_draft_license"], "CC-BY-NC-ND-4.0")
         self.assertEqual(model["commercial_speculative_method"], "mtp")
         self.assertIn("@sha256:", model["runtime_base_image"])
@@ -138,7 +164,7 @@ class GLM53FlashRecipeTests(unittest.TestCase):
         script = SCRIPT.read_text(encoding="utf-8")
 
         self.assertIn(
-            'UPSTREAM_REVISION_DEFAULT="b5ab8091dec88e324c943deb96c2dfd957db9f36"',
+            'UPSTREAM_REVISION_DEFAULT="9348755653f6f8cda5d56562c05462724c40fcbd"',
             script,
         )
         self.assertIn(
@@ -146,7 +172,7 @@ class GLM53FlashRecipeTests(unittest.TestCase):
             script,
         )
         self.assertIn(
-            'DFLASH_MODEL_REVISION_DEFAULT="7d74cdd881ed7e32c31175984a67823127b66cfe"',
+            'DFLASH_MODEL_REVISION_DEFAULT="dc77ff1c99eeb2df044ee3d4f0094eb033fee410"',
             script,
         )
         self.assertIn("sync_recipe_pin", script)
@@ -165,6 +191,10 @@ class GLM53FlashRecipeTests(unittest.TestCase):
         self.assertIn("HEAD_GID", script)
         self.assertIn("WORKER_GID", script)
         self.assertIn("patch_kpool_tail_slotmap.py", script)
+        self.assertIn("overlay/exl3_fat_moe.cu", script)
+        self.assertIn("patch_indexer_workspace.py", script)
+        self.assertIn("printf 'DFLASH_REVISION=%s\\n'", script)
+        self.assertIn("SKIP_BUILD=1", script)
         self.assertIn("printf 'VLLM_API_KEY=\\n'", script)
         self.assertIn("--runtime=nvidia --device=/dev/nvidia0", script)
         self.assertIn("worker_devices != 1", script)
@@ -185,6 +215,7 @@ class GLM53FlashRecipeTests(unittest.TestCase):
         self.assertIn("run_proxy_cli smoke", script)
         self.assertIn("Tailscale Funnel targets unauthenticated raw port", script)
         self.assertIn("show_failure_diagnostics", script)
+        self.assertIn("Pinned launcher could not stop the previous revision", script)
         self.assertIn("Watching EngineCore for 20 seconds", script)
         self.assertIn("Post-start GLM completion failed", script)
         self.assertNotIn("RAY_OBJECT_STORE_MEMORY", script)

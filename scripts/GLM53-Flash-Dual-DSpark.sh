@@ -22,14 +22,14 @@ RECIPE_DIR_DEFAULT="${RUNTIME_DIR_DEFAULT}/miaai-exl3-dual-spark"
 PROJECT_ENV_FILE_DEFAULT="${PROJECT_ROOT}/.env.local"
 
 UPSTREAM_REPO_DEFAULT="https://github.com/MiaAI-Lab/GLM-5.3-Flash-EXL3-2x-DGX-Sparks.git"
-UPSTREAM_REVISION_DEFAULT="b5ab8091dec88e324c943deb96c2dfd957db9f36"
+UPSTREAM_REVISION_DEFAULT="9348755653f6f8cda5d56562c05462724c40fcbd"
 MODEL_ID_DEFAULT="brandonmusic/GLM-5.3-Flash-tr3-4bpw"
 MODEL_REVISION_DEFAULT="5ab363a8dcf6405955fd5f99671e01a1c9fb124b"
 DFLASH_MODEL_ID_DEFAULT="incoai/GLM-5.3-Flash-DFlash2"
-DFLASH_MODEL_REVISION_DEFAULT="7d74cdd881ed7e32c31175984a67823127b66cfe"
+DFLASH_MODEL_REVISION_DEFAULT="dc77ff1c99eeb2df044ee3d4f0094eb033fee410"
 VLLM_BASE_IMAGE_DEFAULT="vllm/vllm-openai:glm53-flash-arm64-cu130@sha256:905c02933be6021301db2dc284e24e3727467aa3a0f63b41d609885778a07bce"
-VLLM_SOURCE_IMAGE_DEFAULT="ghcr.io/miaai-lab/glm-5.3-flash-2x-dgx-sparks@sha256:9bb1557a4234fce63d59599e44d10747eabd742beb337eebf9e7070be8a0fd58"
-VLLM_IMAGE_DEFAULT="ml-compute/glm53-flash-exl3:mp-dflash2-v4-b5ab809"
+VLLM_SOURCE_IMAGE_DEFAULT="ghcr.io/miaai-lab/glm-5.3-flash-2x-dgx-sparks@sha256:eecb36e14dc34c92d46827fde7b09f7e0bf27e27c426ece126376c02dea6cd2f"
+VLLM_IMAGE_DEFAULT="ml-compute/glm53-flash-exl3:mp-dflash2-v5-9348755"
 
 PROFILE_FILE="${GLM53_DSPARK_CONFIG_FILE:-${PROFILE_FILE_DEFAULT}}"
 RUNTIME_DIR="${GLM53_DSPARK_RUNTIME_DIR:-${RUNTIME_DIR_DEFAULT}}"
@@ -81,7 +81,8 @@ Reviewed MiaAI profile:
   - fused EXL3/TR3 K4 routed experts with native SM121 cubins
   - direct vLLM multiprocessing executor, two nodes, TP=2
   - DFlash2 k=7 on draft TP=2; MTP k=2 remains the rollback mode
-  - 1M context, 4 sequences, 2048-token prefill chunks, FP8 MLA KV
+  - E3 grouped fat-expert MoE, 850K context, 4 sequences, 7168-token chunks
+  - right-sized sparse-indexer workspace, 0.85 UMA budget, FP8 MLA KV
   - padded DFlash2/MLA KV slot-sharing and corrected hybrid prefix hits
   - bounded K-pool tail slot mapping for safe long generations
   - persistent JIT caches, post-health shape warmup, protected active decode
@@ -151,13 +152,18 @@ TENSOR_PARALLEL_SIZE|2
 NUM_NODES|2
 DISTRIBUTED_EXECUTOR_BACKEND|mp
 QUANTIZATION|exl3
-MAX_MODEL_LEN|1000000
+MAX_MODEL_LEN|850000
 MAX_NUM_SEQS|4
-MAX_NUM_BATCHED_TOKENS|2048
-GPU_MEMORY_UTILIZATION|0.87
+MAX_NUM_BATCHED_TOKENS|7168
+GPU_MEMORY_UTILIZATION|0.85
 KV_CACHE_DTYPE|fp8
 ENFORCE_EAGER|0
 EXL3_FUSED_MOE|1
+EXL3_FAT_SORTED|0
+EXL3_FAT_BATCHED|0
+EXL3_FAT_KERNEL|1
+EXL3_FAT_GROUPED|1
+EXL3_TEMP_ROWS_FUSED|32
 ENABLE_PREFIX_CACHING|1
 SPEC_METHOD|dflash
 DFLASH_SPECULATIVE_TOKENS|7
@@ -178,6 +184,14 @@ CACHE_ROOT|${RUNTIME_DIR}/cache/vllm
 WORKER_VLLM_CACHE|
 GLM53_SUPPRESS_STOPS_IN_REASONING|1
 GLM53_MIXED_PREFILL_CHUNK|skip
+GLM53_INDEXER_WORKSPACE|rightsize
+GLM53_SPINWAIT_MS|stock
+LONG_PREFILL_TOKEN_THRESHOLD|
+GLM53_DEFAULT_REASONING_EFFORT|
+GLM53_ADAPTIVE_K|off
+GLM53_DENSE_FP8|off
+GLM53_APC_RETENTION_INTERVAL|
+GLM53_APC_RETENTION_INTERVAL_SWA|
 VLLM_EXECUTE_MODEL_TIMEOUT_SECONDS|1800
 GLM53_BOOT_SHAPE_WARMUP|1
 GLM53_WARMUP_REQ_TIMEOUT|240
@@ -193,7 +207,7 @@ HEAD_GID|
 WORKER_GID|
 NCCL_CROSS_NIC|0
 EXTRA_ARGS|
-GLM53_MIN_AVAILABLE_GIB|112
+GLM53_MIN_AVAILABLE_GIB|111
 GLM53_MIN_DISK_GIB|220
 EOF
 
@@ -247,6 +261,11 @@ GPU_MEMORY_UTILIZATION
 KV_CACHE_DTYPE
 ENFORCE_EAGER
 EXL3_FUSED_MOE
+EXL3_FAT_SORTED
+EXL3_FAT_BATCHED
+EXL3_FAT_KERNEL
+EXL3_FAT_GROUPED
+EXL3_TEMP_ROWS_FUSED
 ENABLE_PREFIX_CACHING
 SPEC_METHOD
 DFLASH_SPECULATIVE_TOKENS
@@ -267,6 +286,14 @@ CACHE_ROOT
 WORKER_VLLM_CACHE
 GLM53_SUPPRESS_STOPS_IN_REASONING
 GLM53_MIXED_PREFILL_CHUNK
+GLM53_INDEXER_WORKSPACE
+GLM53_SPINWAIT_MS
+LONG_PREFILL_TOKEN_THRESHOLD
+GLM53_DEFAULT_REASONING_EFFORT
+GLM53_ADAPTIVE_K
+GLM53_DENSE_FP8
+GLM53_APC_RETENTION_INTERVAL
+GLM53_APC_RETENTION_INTERVAL_SWA
 VLLM_EXECUTE_MODEL_TIMEOUT_SECONDS
 GLM53_BOOT_SHAPE_WARMUP
 GLM53_WARMUP_REQ_TIMEOUT
@@ -297,20 +324,24 @@ validate_profile() {
     || die "DISTRIBUTED_EXECUTOR_BACKEND must remain mp"
   [[ "${QUANTIZATION}" == "exl3" ]] \
     || die "QUANTIZATION must remain exl3 for the packed TR3 checkpoint"
-  (( MAX_MODEL_LEN > 0 && MAX_MODEL_LEN <= 1000000 )) \
-    || die "MAX_MODEL_LEN must be between 1 and MiaAI's reviewed 1000000"
+  (( MAX_MODEL_LEN > 0 && MAX_MODEL_LEN <= 850000 )) \
+    || die "MAX_MODEL_LEN must be between 1 and MiaAI's reviewed E3 ceiling 850000"
   (( MAX_NUM_SEQS > 0 && MAX_NUM_SEQS <= 4 )) \
     || die "MAX_NUM_SEQS must be between 1 and MiaAI's reviewed value 4"
-  (( MAX_NUM_BATCHED_TOKENS > 0 && MAX_NUM_BATCHED_TOKENS <= 2048 )) \
-    || die "MAX_NUM_BATCHED_TOKENS must be between 1 and MiaAI's reviewed value 2048"
-  awk -v value="${GPU_MEMORY_UTILIZATION}" 'BEGIN {exit !(value > 0 && value <= 0.87)}' \
-    || die "GPU_MEMORY_UTILIZATION must not exceed MiaAI's padded-slot-share profile value 0.87"
+  (( MAX_NUM_BATCHED_TOKENS > 0 && MAX_NUM_BATCHED_TOKENS <= 7168 )) \
+    || die "MAX_NUM_BATCHED_TOKENS must be between 1 and MiaAI's reviewed E3 value 7168"
+  awk -v value="${GPU_MEMORY_UTILIZATION}" 'BEGIN {exit !(value > 0 && value <= 0.85)}' \
+    || die "GPU_MEMORY_UTILIZATION must not exceed MiaAI's E3 UMA profile value 0.85"
   [[ "${KV_CACHE_DTYPE}" == "fp8" ]] \
     || die "KV_CACHE_DTYPE must remain fp8 for packed fp8_ds_mla"
   [[ "${ENFORCE_EAGER}" == "0" ]] \
     || die "ENFORCE_EAGER must remain 0 so the reviewed CUDA graph path is used"
   [[ "${EXL3_FUSED_MOE}" == "1" ]] \
     || die "EXL3_FUSED_MOE must remain enabled for the reviewed decode path"
+  [[ "${EXL3_FAT_SORTED}" == "0" && "${EXL3_FAT_BATCHED}" == "0" \
+    && "${EXL3_FAT_KERNEL}" == "1" && "${EXL3_FAT_GROUPED}" == "1" \
+    && "${EXL3_TEMP_ROWS_FUSED}" == "32" ]] \
+    || die "The reviewed E3 grouped-MoE profile requires fat kernel/grouped=1 and temp rows=32"
   [[ "${ENABLE_PREFIX_CACHING}" == "1" ]] \
     || die "ENABLE_PREFIX_CACHING must remain enabled"
   [[ "${TOOL_CALL_PARSER}" == "glm47" && "${REASONING_PARSER}" == "glm45" ]] \
@@ -331,6 +362,20 @@ validate_profile() {
     || die "GLM53_SUPPRESS_STOPS_IN_REASONING must remain enabled to avoid mid-reasoning truncation"
   [[ "${GLM53_MIXED_PREFILL_CHUNK}" == "skip" ]] \
     || die "GLM53_MIXED_PREFILL_CHUNK must remain skip to protect active decode"
+  [[ "${GLM53_INDEXER_WORKSPACE}" == "rightsize" ]] \
+    || die "GLM53_INDEXER_WORKSPACE must remain rightsize for the E3 memory profile"
+  [[ "${GLM53_SPINWAIT_MS}" == "stock" || "${GLM53_SPINWAIT_MS}" =~ ^([1-9]|[1-9][0-9]|[1-9][0-9][0-9]|1000)$ ]] \
+    || die "GLM53_SPINWAIT_MS must be stock or an integer from 1 through 1000"
+  [[ -z "${LONG_PREFILL_TOKEN_THRESHOLD}" ]] \
+    || die "LONG_PREFILL_TOKEN_THRESHOLD remains opt-in pending an ml-compute A/B"
+  [[ -z "${GLM53_DEFAULT_REASONING_EFFORT}" ]] \
+    || die "GLM53_DEFAULT_REASONING_EFFORT remains unset so clients control reasoning"
+  [[ "${GLM53_ADAPTIVE_K}" == "off" ]] \
+    || die "GLM53_ADAPTIVE_K remains off until the lossless path is qualified locally"
+  [[ "${GLM53_DENSE_FP8}" == "off" ]] \
+    || die "GLM53_DENSE_FP8 remains off because its quality evaluation is provisional"
+  [[ -z "${GLM53_APC_RETENTION_INTERVAL}" && -z "${GLM53_APC_RETENTION_INTERVAL_SWA}" ]] \
+    || die "APC retention overrides remain disabled pending workload qualification"
   (( VLLM_EXECUTE_MODEL_TIMEOUT_SECONDS >= 600 )) \
     || die "VLLM_EXECUTE_MODEL_TIMEOUT_SECONDS must be at least 600 for cold TP=2 JIT"
   [[ "${GLM53_BOOT_SHAPE_WARMUP}" == "1" ]] \
@@ -745,9 +790,15 @@ write_upstream_env() {
     printf 'QUANTIZATION=%s\n' "${QUANTIZATION}"
     printf 'ENFORCE_EAGER=%s\n' "${ENFORCE_EAGER}"
     printf 'EXL3_FUSED_MOE=%s\n' "${EXL3_FUSED_MOE}"
+    printf 'EXL3_FAT_SORTED=%s\n' "${EXL3_FAT_SORTED}"
+    printf 'EXL3_FAT_BATCHED=%s\n' "${EXL3_FAT_BATCHED}"
+    printf 'EXL3_FAT_KERNEL=%s\n' "${EXL3_FAT_KERNEL}"
+    printf 'EXL3_FAT_GROUPED=%s\n' "${EXL3_FAT_GROUPED}"
+    printf 'EXL3_TEMP_ROWS_FUSED=%s\n' "${EXL3_TEMP_ROWS_FUSED}"
     printf 'SERVED_MODEL_NAME=%s\n' "${SERVED_MODEL_NAME}"
     printf 'SPEC_METHOD=%s\n' "${SPEC_METHOD}"
     printf 'DFLASH_MODEL=%s\n' "${DFLASH_MODEL_ID}"
+    printf 'DFLASH_REVISION=%s\n' "${DFLASH_MODEL_REVISION}"
     printf 'DFLASH_TOKENS=%s\n' "${DFLASH_SPECULATIVE_TOKENS}"
     printf 'DFLASH_DRAFT_TP=%s\n' "${DFLASH_DRAFT_TP}"
     printf 'MTP_TOKENS=%s\n' "${MTP_SPECULATIVE_TOKENS}"
@@ -775,6 +826,14 @@ write_upstream_env() {
     printf 'WORKER_VLLM_CACHE=%s\n' "$(worker_vllm_cache)"
     printf 'GLM53_SUPPRESS_STOPS_IN_REASONING=%s\n' "${GLM53_SUPPRESS_STOPS_IN_REASONING}"
     printf 'GLM53_MIXED_PREFILL_CHUNK=%s\n' "${GLM53_MIXED_PREFILL_CHUNK}"
+    printf 'GLM53_INDEXER_WORKSPACE=%s\n' "${GLM53_INDEXER_WORKSPACE}"
+    printf 'GLM53_SPINWAIT_MS=%s\n' "${GLM53_SPINWAIT_MS}"
+    printf 'LONG_PREFILL_TOKEN_THRESHOLD=%s\n' "${LONG_PREFILL_TOKEN_THRESHOLD}"
+    printf 'GLM53_DEFAULT_REASONING_EFFORT=%s\n' "${GLM53_DEFAULT_REASONING_EFFORT}"
+    printf 'GLM53_ADAPTIVE_K=%s\n' "${GLM53_ADAPTIVE_K}"
+    printf 'GLM53_DENSE_FP8=%s\n' "${GLM53_DENSE_FP8}"
+    printf 'GLM53_APC_RETENTION_INTERVAL=%s\n' "${GLM53_APC_RETENTION_INTERVAL}"
+    printf 'GLM53_APC_RETENTION_INTERVAL_SWA=%s\n' "${GLM53_APC_RETENTION_INTERVAL_SWA}"
     printf 'VLLM_EXECUTE_MODEL_TIMEOUT_SECONDS=%s\n' "${VLLM_EXECUTE_MODEL_TIMEOUT_SECONDS}"
     printf 'GLM53_BOOT_SHAPE_WARMUP=%s\n' "${GLM53_BOOT_SHAPE_WARMUP}"
     printf 'GLM53_WARMUP_REQ_TIMEOUT=%s\n' "${GLM53_WARMUP_REQ_TIMEOUT}"
@@ -945,6 +1004,19 @@ materialize_upstream_launcher() {
     || die "Pinned upstream chat template is missing"
   [[ -f "${RECIPE_DIR}/overlay/patch_kpool_tail_slotmap.py" ]] \
     || die "Pinned upstream K-pool tail slot-map fix is missing"
+  local required
+  for required in \
+    overlay/exl3.py \
+    overlay/exl3_fat_moe.cu \
+    overlay/exl3_fat_moe.cuh \
+    overlay/patch_indexer_workspace.py \
+    overlay/patch_spinwait.py \
+    overlay/patch_adaptive_k.py \
+    overlay/patch_dense_fp8.py \
+    overlay/patch_apc_per_group_retention.py; do
+    [[ -f "${RECIPE_DIR}/${required}" ]] \
+      || die "Pinned upstream E3 artifact is missing: ${required}"
+  done
   tmp="$(mktemp "${RECIPE_DIR}/.ml-compute-start.XXXXXX")"
   if ! awk '
     BEGIN { host = 0; endpoint = 0; worker_run = 0; worker_devices = 0 }
@@ -987,7 +1059,11 @@ run_upstream() (
   write_upstream_env
   materialize_upstream_launcher
   cd "${RECIPE_DIR}"
+  # ml-compute pins Mia's published E3/SM121 binary by digest. The later
+  # Python overlays are bind-mounted by start.sh; do not replace that audited
+  # image with an implicit local build merely because the recipe stamp moved.
   SKIP_PULL=1 \
+  SKIP_BUILD=1 \
   SKIP_DOWNLOAD=1 \
   SKIP_SYNC=1 \
   HF_HUB_OFFLINE=1 \
@@ -1135,7 +1211,11 @@ stop_service() {
   load_profile
   run_proxy_cli stop || true
   if [[ -d "${RECIPE_DIR}/.git" ]]; then
-    run_upstream stop || true
+    if ! run_upstream stop; then
+      warn "Pinned launcher could not stop the previous revision; removing only the named GLM containers"
+      docker rm -f "${GLM53_HEAD_CONTAINER}" >/dev/null 2>&1 || true
+      worker_docker rm -f "${GLM53_WORKER_CONTAINER}" >/dev/null 2>&1 || true
+    fi
   else
     docker rm -f "${GLM53_HEAD_CONTAINER}" >/dev/null 2>&1 || true
     worker_docker rm -f "${GLM53_WORKER_CONTAINER}" >/dev/null 2>&1 || true
