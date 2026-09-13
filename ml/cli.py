@@ -1177,6 +1177,22 @@ DSPARK_ONE_ACTIONS = [
     "update", "all", "path", "help",
 ]
 
+QWEN38_27B_SGLANG_ACTIONS = [
+    "bootstrap", "configure", "check", "setup", "start", "status", "smoke",
+    "logs", "stop", "update", "path", "help",
+]
+
+
+@cli.command("qwen38-27b-sglang")
+@click.argument("action", required=False, default="help", type=click.Choice(QWEN38_27B_SGLANG_ACTIONS, case_sensitive=False))
+def qwen38_27b_sglang_cmd(action: str):
+    """Manage Qwen3.8-27B SGLang/DSpark on one dedicated DGX Spark."""
+    script = Path(__file__).resolve().parent.parent / "scripts" / "Qwen38-27B-SGLang-DSpark.sh"
+    if not script.is_file():
+        raise click.ClickException(f"Qwen3.8-27B SGLang recipe not found: {script}")
+    result = subprocess.run([str(script), action], check=False)
+    raise click.exceptions.Exit(result.returncode)
+
 
 @cli.command("dspark-one")
 @click.argument(

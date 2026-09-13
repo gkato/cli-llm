@@ -19,6 +19,7 @@ API; lightweight vision detectors use a small task-specific `/v1` API:
 | **Qwen Flash Next vLLM** | Current MiaAI vLLM TP2+EP+MTP3 on two GB10 nodes | Qwen3.8 Flash Next NVFP4 | `qwen38-flash-next-vllm <action>` |
 | **GLM Flash** | Dedicated vLLM + MP TP2 on two GB10 nodes | GLM-5.3 Flash EXL3 + DFlash2 | `glm53-flash <action>` |
 | **DSpark One** | MiaAI SparkInfer/EXL3 on one dedicated GB10 | DeepSeek V4 Flash 0731 | `dspark-one <action>` |
+| **Qwen3.8 27B SGLang** | MiaAI SGLang/DSpark on one GB10 | Qwen3.8 27B NVFP4 | `qwen38-27b-sglang <action>` |
 
 An optional streaming router exposes several resident services through one
 public port, selects the backend from the request's `model` field, and can
@@ -333,6 +334,28 @@ VLLM_BASE_URL=http://127.0.0.1:8888 \
   BENCH_LABEL=stage-c-256k scripts/bench_dspark_ab.sh full
 BENCH_LABEL=miaai-512k scripts/bench_dspark_ab.sh full
 ```
+
+### Qwen3.8 27B SGLang / DSpark (one DGX Spark)
+
+This independent, one-Spark recipe wraps [MiaAI-Lab's Qwen3.8-27B SGLang
+deployment](https://github.com/MiaAI-Lab/Qwen3.8-27B-SGLang-DGX-Spark) at
+revision `9fb18edf8cfb3364e8aa89258e6d5ab1fe1fd11a`. The checked-in profile
+uses the NVFP4 checkpoint, FP8 KV cache, 512K YaRN context, ten requests, and
+the in-checkpoint MTP speculative draft. The raw listener is patched to
+loopback; the shared authenticated proxy exposes port 8000.
+
+```bash
+python3 -m ml.cli qwen38-27b-sglang setup
+python3 -m ml.cli qwen38-27b-sglang start
+python3 -m ml.cli qwen38-27b-sglang smoke
+```
+
+For a fresh machine, use `scripts/start-Qwen38-27B-SGLang-DSpark.sh --first-run`.
+The checked-in profile is
+[`config/dspark-qwen38-27b-sglang.env`](config/dspark-qwen38-27b-sglang.env).
+YaRN contexts above native 262K require the MTP mode; the DSpark draft remains
+available for native-context throughput by setting `YARN=0`,
+`CONTEXT_LENGTH=262144`, and `SPECULATIVE_MODE=dspark`.
 
 ### Qwen3.8 Flash Next SGLang (two linked GB10 systems)
 

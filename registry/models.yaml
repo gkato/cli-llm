@@ -1117,3 +1117,31 @@ models:
     dedicated_host: true
     harness_coexistence: false
     machine_profile: config/dspark-one-deepseek-v4-flash-0731.env
+
+  # Qwen3.8-27B NVFP4 on one dedicated GB10. This is MiaAI-Lab's SGLang
+  # recipe, pinned independently from the two-node Qwen Flash Next paths.
+  qwen3.8-27b-nvfp4-sglang-dspark:
+    hf_id: RadixArk/Qwen3.8-27B-NVFP4-BF16-LMHead
+    served_model_name: qwen3.8-27b-sglang
+    serve_backend: qwen38-27b-sglang
+    external_recipe: scripts/Qwen38-27B-SGLang-DSpark.sh
+    upstream_repo: https://github.com/MiaAI-Lab/Qwen3.8-27B-SGLang-DGX-Spark
+    upstream_revision: 9fb18edf8cfb3364e8aa89258e6d5ab1fe1fd11a
+    nodes: 1
+    tensor_parallel_size: 1
+    runtime: sglang
+    runtime_image: lmsysorg/sglang:qwen38-27b
+    quantization: nvfp4
+    weight_format: nvfp4
+    native_context_len: 262144
+    max_model_len: 262144
+    chunked_prefill_size: 8192
+    max_num_seqs: 10
+    kv_cache_dtype: fp8_e4m3
+    speculative_method: dspark
+    speculative_tokens: 8
+    raw_api_url: http://127.0.0.1:8888
+    proxy_bind: 0.0.0.0:8000
+    proxy_url: http://127.0.0.1:8000
+    dedicated_host: true
+    machine_profile: config/dspark-qwen38-27b-sglang.env
