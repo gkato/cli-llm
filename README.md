@@ -357,6 +357,18 @@ YaRN contexts above native 262K require the MTP mode; the DSpark draft remains
 available for native-context throughput by setting `YARN=0`,
 `CONTEXT_LENGTH=262144`, and `SPECULATIVE_MODE=dspark`.
 
+After launch, run a warm-up plus three streamed decode probes through the
+authenticated proxy:
+
+```bash
+scripts/bench-Qwen38-27B-SGLang-DSpark.sh
+```
+
+Set `QWEN38_BENCH_RUNS`, `QWEN38_BENCH_MAX_TOKENS`, or
+`QWEN38_BENCH_PROMPT` to vary the measurement. The script reports total
+request time, first-byte latency, completion-token count, and a decode tok/s
+estimate for each measured run.
+
 ### Qwen3.8 Flash Next SGLang (two linked GB10 systems)
 
 The Qwen path wraps
