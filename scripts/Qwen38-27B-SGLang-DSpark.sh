@@ -18,6 +18,7 @@ load_profile() {
   MAX_CONCURRENT_REQUESTS="$(value MAX_CONCURRENT_REQUESTS 10)"; CHUNKED_PREFILL="$(value CHUNKED_PREFILL 8192)"; CPUSET="$(value CPUSET 5-9,15-19)"
   SERVED_MODEL_NAME="$(value SERVED_MODEL_NAME qwen3.8-27b-sglang)"; SERVING_HOST="$(value SERVING_HOST 127.0.0.1)"; SERVING_PORT="$(value SERVING_PORT 8888)"
   DSPARK_PROXY_HOST="$(value DSPARK_PROXY_HOST 0.0.0.0)"; DSPARK_PROXY_PORT="$(value DSPARK_PROXY_PORT 8000)"; SPECULATIVE_MODE="$(value SPECULATIVE_MODE dspark)"
+  DSPARK_EXTRA="$(value DSPARK_EXTRA '')"; export DSPARK_EXTRA
 }
 project_python() { [[ -x "${PROJECT_ROOT}/venv/bin/python" ]] && printf '%s' "${PROJECT_ROOT}/venv/bin/python" || printf '%s' python3; }
 api_key() { printf '%s' "${API_KEY:-$(sed -n 's/^API_KEY=//p' "$PROJECT_ENV_FILE" 2>/dev/null | tail -1)}"; }

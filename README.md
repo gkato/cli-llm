@@ -340,8 +340,8 @@ BENCH_LABEL=miaai-512k scripts/bench_dspark_ab.sh full
 This independent, one-Spark recipe wraps [MiaAI-Lab's Qwen3.8-27B SGLang
 deployment](https://github.com/MiaAI-Lab/Qwen3.8-27B-SGLang-DGX-Spark) at
 revision `9fb18edf8cfb3364e8aa89258e6d5ab1fe1fd11a`. The checked-in profile
-uses the NVFP4 checkpoint, FP8 KV cache, 512K YaRN context, ten requests, and
-the in-checkpoint MTP speculative draft. The raw listener is patched to
+uses the NVFP4 checkpoint, FP8 KV cache, native 262K context, ten requests,
+the DSpark block-7 draft, and request logging. The raw listener is patched to
 loopback; the shared authenticated proxy exposes port 8000.
 
 ```bash

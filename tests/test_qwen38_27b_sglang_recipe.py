@@ -28,9 +28,10 @@ class Qwen38SGLangRecipeTests(unittest.TestCase):
     def test_profile_keeps_raw_api_private(self):
         profile = values()
         self.assertEqual(profile["QUANT"], "nvfp4")
-        self.assertEqual(profile["YARN"], "1")
-        self.assertEqual(profile["CONTEXT_LENGTH"], "524288")
-        self.assertEqual(profile["SPECULATIVE_MODE"], "mtp")
+        self.assertEqual(profile["YARN"], "0")
+        self.assertEqual(profile["CONTEXT_LENGTH"], "262144")
+        self.assertEqual(profile["SPECULATIVE_MODE"], "dspark")
+        self.assertEqual(profile["DSPARK_EXTRA"], "--log-requests")
         self.assertEqual(profile["SERVING_HOST"], "127.0.0.1")
         self.assertEqual(profile["DSPARK_PROXY_PORT"], "8000")
 
@@ -48,6 +49,7 @@ class Qwen38SGLangRecipeTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
         text = SCRIPT.read_text()
         self.assertIn('HOST="127.0.0.1"', text)
+        self.assertIn('DSPARK_EXTRA="$(value DSPARK_EXTRA', text)
         self.assertIn("dspark-proxy", text)
 
     @patch("ml.cli.subprocess.run")
