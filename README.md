@@ -490,7 +490,7 @@ The GLM path serves
 [`brandonmusic/GLM-5.3-Flash-tr3-4bpw`](https://huggingface.co/brandonmusic/GLM-5.3-Flash-tr3-4bpw),
 a roughly 164 GiB EXL3/TR3 quantization of the multimodal 320B/18B-active MoE.
 The lifecycle wraps [MiaAI-Lab's EXL3 dual-DGX-Spark recipe](https://github.com/MiaAI-Lab/GLM-5.3-Flash-EXL3-2x-DGX-Sparks)
-at pinned revision `9348755653f6f8cda5d56562c05462724c40fcbd`, and pins the
+at pinned revision `56d0bdfbaa961283d1c54e61f4e67fcb1b9d37b9` (MiaAI v1.6.0), and pins the
 measured target snapshot `5ab363a8dcf6405955fd5f99671e01a1c9fb124b`.
 
 This replaces the previous NVFP4/Ray profile. It removes Ray and its object
@@ -502,7 +502,12 @@ at receipt-matched revision `dc77ff1c99eeb2df044ee3d4f0094eb033fee410`,
 with seven speculative tokens and a TP=2 sharded draft. The reviewed E3 launch
 shape is four sequences, 7168-token prefill chunks, 850K context, 0.85 memory
 utilization, right-sized sparse-indexer workspace, FP8 MLA KV, prefix caching,
-and skipped maximum-size multimodal dummy profiling. E3 uses about 560 MiB of
+and skipped maximum-size multimodal dummy profiling. The v1.6 image adds
+InstantTensor direct I/O, fair mixed-prefill scheduling (256-token chunks, 30%
+fair share, 2-second mixed-step limit), and bounded image processing (2,048
+tokens/image with a 1 GiB media cache). Fair scheduling prevents new C2/C4
+requests from waiting behind a long active decode; it is a latency-fairness
+change rather than a C1 decode-speed claim. E3 uses about 560 MiB of
 persistent scratch, so Mia's safe profile trades the former 1M ceiling for
 faster prefill and roughly 2.4 GiB more UMA headroom per node. The overlay also
 fixes hybrid prefix-cache hits, keeps long peer prefills off active decode

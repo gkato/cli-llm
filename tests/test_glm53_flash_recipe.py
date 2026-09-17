@@ -51,11 +51,20 @@ class GLM53FlashRecipeTests(unittest.TestCase):
         self.assertEqual(profile["EXL3_TEMP_ROWS_FUSED"], "32")
         self.assertEqual(profile["ENABLE_PREFIX_CACHING"], "1")
         self.assertEqual(profile["GLM53_SUPPRESS_STOPS_IN_REASONING"], "1")
-        self.assertEqual(profile["GLM53_MIXED_PREFILL_CHUNK"], "skip")
+        self.assertEqual(profile["LOAD_FORMAT"], "instanttensor")
+        self.assertEqual(profile["GLM53_MIXED_PREFILL_CHUNK"], "fair")
+        self.assertEqual(profile["GLM53_FAIR_PREFILL_CHUNK"], "256")
+        self.assertEqual(profile["GLM53_FAIR_PREFILL_SHARE"], "0.30")
+        self.assertEqual(profile["GLM53_FAIR_PREFILL_MAX_INTERVAL_MS"], "2000")
+        self.assertEqual(profile["GLM53_FAIR_PREFILL_MAX_STEP_MS"], "2000")
+        self.assertEqual(profile["GLM53_FAIR_PREFILL_MAX_CHUNKS"], "1")
+        self.assertEqual(profile["GLM53_APC_NO_STORE"], "1")
+        self.assertEqual(profile["GLM53_KV_CAPACITY_LOG"], "1")
         self.assertEqual(profile["GLM53_INDEXER_WORKSPACE"], "rightsize")
         self.assertEqual(profile["GLM53_SPINWAIT_MS"], "stock")
         self.assertEqual(profile["GLM53_ADAPTIVE_K"], "off")
         self.assertEqual(profile["GLM53_DENSE_FP8"], "off")
+        self.assertEqual(profile["GLM53_COOP_GEOMETRY"], "")
         self.assertEqual(profile["GLM53_APC_RETENTION_INTERVAL"], "")
         self.assertEqual(profile["GLM53_APC_RETENTION_INTERVAL_SWA"], "")
         self.assertEqual(profile["VLLM_EXECUTE_MODEL_TIMEOUT_SECONDS"], "1800")
@@ -63,6 +72,9 @@ class GLM53FlashRecipeTests(unittest.TestCase):
         self.assertEqual(profile["GLM53_WARMUP_REQ_TIMEOUT"], "240")
         self.assertEqual(profile["CG_ESTIMATE"], "1")
         self.assertEqual(profile["SKIP_MM_PROFILING"], "1")
+        self.assertEqual(profile["LIMIT_MM"], '{"image":48,"video":1}')
+        self.assertEqual(profile["MM_IMAGE_TOKENS"], "2048")
+        self.assertEqual(profile["MM_PROCESSOR_CACHE_GB"], "1")
         self.assertEqual(profile["SPEC_METHOD"], "dflash")
         self.assertEqual(profile["DFLASH_SPECULATIVE_TOKENS"], "7")
         self.assertEqual(profile["DFLASH_DRAFT_TP"], "2")
@@ -78,12 +90,12 @@ class GLM53FlashRecipeTests(unittest.TestCase):
         self.assertEqual(profile["WORKER_GID"], "")
         self.assertEqual(
             profile["VLLM_IMAGE"],
-            "ml-compute/glm53-flash-exl3:mp-dflash2-v5-9348755",
+            "ml-compute/glm53-flash-exl3:mp-dflash2-v6-56d0bdf",
         )
         self.assertEqual(
             profile["VLLM_SOURCE_IMAGE"],
             "ghcr.io/miaai-lab/glm-5.3-flash-2x-dgx-sparks@sha256:"
-            "eecb36e14dc34c92d46827fde7b09f7e0bf27e27c426ece126376c02dea6cd2f",
+            "447114ee77d14c9b4732ee23978ada2a0ee9027868a231d6fd42700a8b25be1d",
         )
         self.assertIn("@sha256:", profile["VLLM_BASE_IMAGE"])
         self.assertNotIn("RAY_VERSION", profile)
@@ -116,7 +128,7 @@ class GLM53FlashRecipeTests(unittest.TestCase):
         self.assertTrue(model["verified_on_gb10"])
         self.assertEqual(
             model["upstream_revision"],
-            "9348755653f6f8cda5d56562c05462724c40fcbd",
+            "56d0bdfbaa961283d1c54e61f4e67fcb1b9d37b9",
         )
         self.assertEqual(
             model["model_revision"],
@@ -124,19 +136,23 @@ class GLM53FlashRecipeTests(unittest.TestCase):
         )
         self.assertEqual(
             model["runtime_image"],
-            "ml-compute/glm53-flash-exl3:mp-dflash2-v5-9348755",
+            "ml-compute/glm53-flash-exl3:mp-dflash2-v6-56d0bdf",
         )
         self.assertEqual(
             model["runtime_source_image"],
             "ghcr.io/miaai-lab/glm-5.3-flash-2x-dgx-sparks@sha256:"
-            "eecb36e14dc34c92d46827fde7b09f7e0bf27e27c426ece126376c02dea6cd2f",
+            "447114ee77d14c9b4732ee23978ada2a0ee9027868a231d6fd42700a8b25be1d",
         )
         self.assertEqual(
             model["runtime_kernel_patch"],
-            "exl3-e3-grouped-sm121-dflash2-indexer-rightsize-apc-overlay",
+            "exl3-e3-grouped-sm121-dflash2-fair-v5-instanttensor-apc-overlay",
         )
         self.assertEqual(model["dflash_kv_slot_sharing"], "padded_mla")
-        self.assertEqual(model["mixed_prefill_policy"], "skip")
+        self.assertEqual(model["mixed_prefill_policy"], "fair")
+        self.assertEqual(model["fair_prefill_share"], 0.30)
+        self.assertEqual(model["fair_prefill_max_step_ms"], 2000)
+        self.assertTrue(model["instanttensor"])
+        self.assertEqual(model["runtime_load_format"], "instanttensor")
         self.assertTrue(model["boot_shape_warmup"])
         self.assertTrue(model["suppress_stops_during_reasoning"])
         self.assertTrue(model["cuda_graph_estimate_deduction"])
@@ -166,7 +182,7 @@ class GLM53FlashRecipeTests(unittest.TestCase):
         script = SCRIPT.read_text(encoding="utf-8")
 
         self.assertIn(
-            'UPSTREAM_REVISION_DEFAULT="9348755653f6f8cda5d56562c05462724c40fcbd"',
+            'UPSTREAM_REVISION_DEFAULT="56d0bdfbaa961283d1c54e61f4e67fcb1b9d37b9"',
             script,
         )
         self.assertIn(
@@ -184,6 +200,9 @@ class GLM53FlashRecipeTests(unittest.TestCase):
         self.assertIn("SKIP_MM_PROFILING", script)
         self.assertIn("GLM53_SUPPRESS_STOPS_IN_REASONING", script)
         self.assertIn("GLM53_MIXED_PREFILL_CHUNK", script)
+        self.assertIn("GLM53_FAIR_PREFILL_SHARE", script)
+        self.assertIn("LOAD_FORMAT", script)
+        self.assertIn("MM_IMAGE_TOKENS", script)
         self.assertIn("VLLM_EXECUTE_MODEL_TIMEOUT_SECONDS", script)
         self.assertIn("GLM53_BOOT_SHAPE_WARMUP", script)
         self.assertIn("GLM53_WARMUP_REQ_TIMEOUT", script)

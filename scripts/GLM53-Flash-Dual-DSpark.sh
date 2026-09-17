@@ -22,14 +22,14 @@ RECIPE_DIR_DEFAULT="${RUNTIME_DIR_DEFAULT}/miaai-exl3-dual-spark"
 PROJECT_ENV_FILE_DEFAULT="${PROJECT_ROOT}/.env.local"
 
 UPSTREAM_REPO_DEFAULT="https://github.com/MiaAI-Lab/GLM-5.3-Flash-EXL3-2x-DGX-Sparks.git"
-UPSTREAM_REVISION_DEFAULT="9348755653f6f8cda5d56562c05462724c40fcbd"
+UPSTREAM_REVISION_DEFAULT="56d0bdfbaa961283d1c54e61f4e67fcb1b9d37b9"
 MODEL_ID_DEFAULT="brandonmusic/GLM-5.3-Flash-tr3-4bpw"
 MODEL_REVISION_DEFAULT="5ab363a8dcf6405955fd5f99671e01a1c9fb124b"
 DFLASH_MODEL_ID_DEFAULT="incoai/GLM-5.3-Flash-DFlash2"
 DFLASH_MODEL_REVISION_DEFAULT="dc77ff1c99eeb2df044ee3d4f0094eb033fee410"
 VLLM_BASE_IMAGE_DEFAULT="vllm/vllm-openai:glm53-flash-arm64-cu130@sha256:905c02933be6021301db2dc284e24e3727467aa3a0f63b41d609885778a07bce"
-VLLM_SOURCE_IMAGE_DEFAULT="ghcr.io/miaai-lab/glm-5.3-flash-2x-dgx-sparks@sha256:eecb36e14dc34c92d46827fde7b09f7e0bf27e27c426ece126376c02dea6cd2f"
-VLLM_IMAGE_DEFAULT="ml-compute/glm53-flash-exl3:mp-dflash2-v5-9348755"
+VLLM_SOURCE_IMAGE_DEFAULT="ghcr.io/miaai-lab/glm-5.3-flash-2x-dgx-sparks@sha256:447114ee77d14c9b4732ee23978ada2a0ee9027868a231d6fd42700a8b25be1d"
+VLLM_IMAGE_DEFAULT="ml-compute/glm53-flash-exl3:mp-dflash2-v6-56d0bdf"
 
 PROFILE_FILE="${GLM53_DSPARK_CONFIG_FILE:-${PROFILE_FILE_DEFAULT}}"
 RUNTIME_DIR="${GLM53_DSPARK_RUNTIME_DIR:-${RUNTIME_DIR_DEFAULT}}"
@@ -148,6 +148,7 @@ SERVED_MODEL_NAME|GLM-5.3-Flash-EXL3
 VLLM_BASE_IMAGE|${VLLM_BASE_IMAGE_DEFAULT}
 VLLM_SOURCE_IMAGE|${VLLM_SOURCE_IMAGE_DEFAULT}
 VLLM_IMAGE|${VLLM_IMAGE_DEFAULT}
+LOAD_FORMAT|instanttensor
 TENSOR_PARALLEL_SIZE|2
 NUM_NODES|2
 DISTRIBUTED_EXECUTOR_BACKEND|mp
@@ -172,7 +173,10 @@ MTP_SPECULATIVE_TOKENS|2
 TOOL_CALL_PARSER|glm47
 REASONING_PARSER|glm45
 LANGUAGE_MODEL_ONLY|0
-LIMIT_MM|{"image":4,"video":1}
+LIMIT_MM|{"image":48,"video":1}
+MM_IMAGE_TOKENS|2048
+VIDEO_NUM_FRAMES|
+MM_PROCESSOR_CACHE_GB|1
 SKIP_MM_PROFILING|1
 TORCH_CUDA_ARCH_LIST|12.1a
 FLASHINFER_CUDA_ARCH_LIST|12.1a
@@ -183,13 +187,22 @@ VLLM_ENGINE_READY_TIMEOUT_S|3600
 CACHE_ROOT|${RUNTIME_DIR}/cache/vllm
 WORKER_VLLM_CACHE|
 GLM53_SUPPRESS_STOPS_IN_REASONING|1
-GLM53_MIXED_PREFILL_CHUNK|skip
+DEFAULT_MAX_NEW_TOKENS|65536
+GLM53_MIXED_PREFILL_CHUNK|fair
+GLM53_FAIR_PREFILL_CHUNK|256
+GLM53_FAIR_PREFILL_SHARE|0.30
+GLM53_FAIR_PREFILL_MAX_INTERVAL_MS|2000
+GLM53_FAIR_PREFILL_MAX_STEP_MS|2000
+GLM53_FAIR_PREFILL_MAX_CHUNKS|1
+GLM53_APC_NO_STORE|1
+GLM53_KV_CAPACITY_LOG|1
 GLM53_INDEXER_WORKSPACE|rightsize
 GLM53_SPINWAIT_MS|stock
 LONG_PREFILL_TOKEN_THRESHOLD|
 GLM53_DEFAULT_REASONING_EFFORT|
 GLM53_ADAPTIVE_K|off
 GLM53_DENSE_FP8|off
+GLM53_COOP_GEOMETRY|
 GLM53_APC_RETENTION_INTERVAL|
 GLM53_APC_RETENTION_INTERVAL_SWA|
 VLLM_EXECUTE_MODEL_TIMEOUT_SECONDS|1800
@@ -202,6 +215,7 @@ NCCL_HOST_DIR|
 WORKER_NCCL_HOST_DIR|
 NCCL_SO_NAME|libnccl.so.2.30.7
 NCCL_DEBUG|WARN
+NCCL_NCHANNELS|
 NCCL_IB_GID_INDEX|3
 HEAD_GID|
 WORKER_GID|
@@ -250,6 +264,7 @@ SERVED_MODEL_NAME
 VLLM_BASE_IMAGE
 VLLM_SOURCE_IMAGE
 VLLM_IMAGE
+LOAD_FORMAT
 TENSOR_PARALLEL_SIZE
 NUM_NODES
 DISTRIBUTED_EXECUTOR_BACKEND
@@ -275,6 +290,9 @@ TOOL_CALL_PARSER
 REASONING_PARSER
 LANGUAGE_MODEL_ONLY
 LIMIT_MM
+MM_IMAGE_TOKENS
+VIDEO_NUM_FRAMES
+MM_PROCESSOR_CACHE_GB
 SKIP_MM_PROFILING
 TORCH_CUDA_ARCH_LIST
 FLASHINFER_CUDA_ARCH_LIST
@@ -285,13 +303,22 @@ VLLM_ENGINE_READY_TIMEOUT_S
 CACHE_ROOT
 WORKER_VLLM_CACHE
 GLM53_SUPPRESS_STOPS_IN_REASONING
+DEFAULT_MAX_NEW_TOKENS
 GLM53_MIXED_PREFILL_CHUNK
+GLM53_FAIR_PREFILL_CHUNK
+GLM53_FAIR_PREFILL_SHARE
+GLM53_FAIR_PREFILL_MAX_INTERVAL_MS
+GLM53_FAIR_PREFILL_MAX_STEP_MS
+GLM53_FAIR_PREFILL_MAX_CHUNKS
+GLM53_APC_NO_STORE
+GLM53_KV_CAPACITY_LOG
 GLM53_INDEXER_WORKSPACE
 GLM53_SPINWAIT_MS
 LONG_PREFILL_TOKEN_THRESHOLD
 GLM53_DEFAULT_REASONING_EFFORT
 GLM53_ADAPTIVE_K
 GLM53_DENSE_FP8
+GLM53_COOP_GEOMETRY
 GLM53_APC_RETENTION_INTERVAL
 GLM53_APC_RETENTION_INTERVAL_SWA
 VLLM_EXECUTE_MODEL_TIMEOUT_SECONDS
@@ -304,6 +331,7 @@ NCCL_HOST_DIR
 WORKER_NCCL_HOST_DIR
 NCCL_SO_NAME
 NCCL_DEBUG
+NCCL_NCHANNELS
 NCCL_IB_GID_INDEX
 HEAD_GID
 WORKER_GID
@@ -360,8 +388,16 @@ validate_profile() {
     || die "SKIP_MM_PROFILING must remain enabled; the maximum MM dummy profile OOMs UMA"
   [[ "${GLM53_SUPPRESS_STOPS_IN_REASONING}" == "1" ]] \
     || die "GLM53_SUPPRESS_STOPS_IN_REASONING must remain enabled to avoid mid-reasoning truncation"
-  [[ "${GLM53_MIXED_PREFILL_CHUNK}" == "skip" ]] \
-    || die "GLM53_MIXED_PREFILL_CHUNK must remain skip to protect active decode"
+  [[ "${GLM53_MIXED_PREFILL_CHUNK}" == "fair" ]] \
+    || die "GLM53_MIXED_PREFILL_CHUNK must remain MiaAI fair for bounded C2/C4 admission latency"
+  [[ "${GLM53_FAIR_PREFILL_CHUNK}" == "256" \
+    && "${GLM53_FAIR_PREFILL_SHARE}" == "0.30" \
+    && "${GLM53_FAIR_PREFILL_MAX_INTERVAL_MS}" == "2000" \
+    && "${GLM53_FAIR_PREFILL_MAX_STEP_MS}" == "2000" \
+    && "${GLM53_FAIR_PREFILL_MAX_CHUNKS}" == "1" ]] \
+    || die "The reviewed fair mixed-prefill profile requires 256/0.30/2000/2000/1"
+  [[ "${GLM53_APC_NO_STORE}" == "1" && "${GLM53_KV_CAPACITY_LOG}" == "1" ]] \
+    || die "The reviewed MiaAI v1.6 profile requires APC no-store and KV-capacity diagnostics"
   [[ "${GLM53_INDEXER_WORKSPACE}" == "rightsize" ]] \
     || die "GLM53_INDEXER_WORKSPACE must remain rightsize for the E3 memory profile"
   [[ "${GLM53_SPINWAIT_MS}" == "stock" || "${GLM53_SPINWAIT_MS}" =~ ^([1-9]|[1-9][0-9]|[1-9][0-9][0-9]|1000)$ ]] \
@@ -374,6 +410,8 @@ validate_profile() {
     || die "GLM53_ADAPTIVE_K remains off until the lossless path is qualified locally"
   [[ "${GLM53_DENSE_FP8}" == "off" ]] \
     || die "GLM53_DENSE_FP8 remains off because its quality evaluation is provisional"
+  [[ -z "${GLM53_COOP_GEOMETRY}" || "${GLM53_COOP_GEOMETRY}" =~ ^[012]$ ]] \
+    || die "GLM53_COOP_GEOMETRY must be empty or 0, 1, or 2"
   [[ -z "${GLM53_APC_RETENTION_INTERVAL}" && -z "${GLM53_APC_RETENTION_INTERVAL_SWA}" ]] \
     || die "APC retention overrides remain disabled pending workload qualification"
   (( VLLM_EXECUTE_MODEL_TIMEOUT_SECONDS >= 600 )) \
@@ -392,8 +430,12 @@ validate_profile() {
     || die "NCCL_IB_GID_INDEX, HEAD_GID, and WORKER_GID must be non-negative integers"
   [[ "${LANGUAGE_MODEL_ONLY}" == "0" || "${LANGUAGE_MODEL_ONLY}" == "1" ]] \
     || die "LANGUAGE_MODEL_ONLY must be 0 or 1"
-  [[ "${LIMIT_MM}" == '{"image":4,"video":1}' ]] \
-    || die 'LIMIT_MM must remain valid JSON: {"image":4,"video":1}'
+  [[ "${LIMIT_MM}" == '{"image":48,"video":1}' ]] \
+    || die 'LIMIT_MM must remain MiaAI v1.6 JSON: {"image":48,"video":1}'
+  (( MM_IMAGE_TOKENS > 0 && MM_IMAGE_TOKENS <= MAX_NUM_BATCHED_TOKENS )) \
+    || die "MM_IMAGE_TOKENS must be positive and fit within MAX_NUM_BATCHED_TOKENS"
+  (( MM_PROCESSOR_CACHE_GB >= 0 && MM_PROCESSOR_CACHE_GB <= 1 )) \
+    || die "MM_PROCESSOR_CACHE_GB must remain between 0 and 1 on UMA"
   [[ "${MODEL_ID}" == "${MODEL_ID_DEFAULT}" && "${MODEL_REVISION}" == "${MODEL_REVISION_DEFAULT}" ]] \
     || die "MODEL_ID and MODEL_REVISION must remain on the measured EXL3 snapshot"
   [[ "${DFLASH_MODEL_ID}" == "${DFLASH_MODEL_ID_DEFAULT}" \
@@ -405,6 +447,8 @@ validate_profile() {
     || die "VLLM_BASE_IMAGE must remain the reviewed publisher manifest"
   [[ "${VLLM_SOURCE_IMAGE}" == "${VLLM_SOURCE_IMAGE_DEFAULT}" ]] \
     || die "VLLM_SOURCE_IMAGE must remain digest-pinned"
+  [[ "${LOAD_FORMAT}" == "instanttensor" ]] \
+    || die "LOAD_FORMAT must remain instanttensor for MiaAI's v1.6 image"
   [[ "${VLLM_IMAGE}" == "${VLLM_IMAGE_DEFAULT}" ]] \
     || warn "VLLM_IMAGE differs from the revision-keyed local tag"
   [[ "${GLM53_HEAD_CONTAINER}" == "glm53-flash-head" \
@@ -412,6 +456,8 @@ validate_profile() {
     || die "Container names must preserve the ml-compute dual-Spark lifecycle"
   [[ "${USE_HOST_NCCL}" == "0" ]] \
     || die "USE_HOST_NCCL must remain 0; a second NCCL preload conflicts with this image"
+  [[ -z "${NCCL_NCHANNELS}" || "${NCCL_NCHANNELS}" =~ ^[1-9][0-9]*$ ]] \
+    || die "NCCL_NCHANNELS must be empty or a positive integer"
   [[ " ${EXTRA_ARGS} " != *" --host "* && " ${EXTRA_ARGS} " != *" --host="* ]] \
     || die "EXTRA_ARGS may not override the private raw host"
   [[ " ${EXTRA_ARGS} " != *" --port "* && " ${EXTRA_ARGS} " != *" --port="* ]] \
@@ -791,6 +837,7 @@ write_upstream_env() {
     printf 'MODEL_REVISION=%s\n' "${MODEL_REVISION}"
     printf 'HF_HOME=%s\n' "${HF_HOME}"
     printf 'IMAGE=%s\n' "${VLLM_IMAGE}"
+    printf 'LOAD_FORMAT=%s\n' "${LOAD_FORMAT}"
     printf 'PORT=%s\n' "${PORT}"
     # Raw vLLM remains private and unauthenticated. ml-compute's proxy owns
     # public API-key enforcement; clear an inherited upstream API key here.
@@ -822,6 +869,9 @@ write_upstream_env() {
     printf 'LANGUAGE_MODEL_ONLY=%s\n' "${LANGUAGE_MODEL_ONLY}"
     printf 'SKIP_MM_PROFILING=%s\n' "${SKIP_MM_PROFILING}"
     printf 'LIMIT_MM=%q\n' "${LIMIT_MM}"
+    printf 'MM_IMAGE_TOKENS=%s\n' "${MM_IMAGE_TOKENS}"
+    printf 'VIDEO_NUM_FRAMES=%s\n' "${VIDEO_NUM_FRAMES}"
+    printf 'MM_PROCESSOR_CACHE_GB=%s\n' "${MM_PROCESSOR_CACHE_GB}"
     printf 'TORCH_CUDA_ARCH_LIST=%s\n' "${TORCH_CUDA_ARCH_LIST}"
     printf 'FLASHINFER_CUDA_ARCH_LIST=%s\n' "${FLASHINFER_CUDA_ARCH_LIST}"
     printf 'USE_HOST_NCCL=%s\n' "${USE_HOST_NCCL}"
@@ -833,17 +883,27 @@ write_upstream_env() {
     printf 'WORKER_GID=%s\n' "${WORKER_GID}"
     printf 'NCCL_CROSS_NIC=%s\n' "${NCCL_CROSS_NIC}"
     printf 'NCCL_DEBUG=%s\n' "${NCCL_DEBUG}"
+    printf 'NCCL_NCHANNELS=%s\n' "${NCCL_NCHANNELS}"
     printf 'READY_TIMEOUT=%s\n' "${VLLM_ENGINE_READY_TIMEOUT_S}"
     printf 'CACHE_ROOT=%s\n' "${CACHE_ROOT}"
     printf 'WORKER_VLLM_CACHE=%s\n' "$(worker_vllm_cache)"
     printf 'GLM53_SUPPRESS_STOPS_IN_REASONING=%s\n' "${GLM53_SUPPRESS_STOPS_IN_REASONING}"
+    printf 'DEFAULT_MAX_NEW_TOKENS=%s\n' "${DEFAULT_MAX_NEW_TOKENS}"
     printf 'GLM53_MIXED_PREFILL_CHUNK=%s\n' "${GLM53_MIXED_PREFILL_CHUNK}"
+    printf 'GLM53_FAIR_PREFILL_CHUNK=%s\n' "${GLM53_FAIR_PREFILL_CHUNK}"
+    printf 'GLM53_FAIR_PREFILL_SHARE=%s\n' "${GLM53_FAIR_PREFILL_SHARE}"
+    printf 'GLM53_FAIR_PREFILL_MAX_INTERVAL_MS=%s\n' "${GLM53_FAIR_PREFILL_MAX_INTERVAL_MS}"
+    printf 'GLM53_FAIR_PREFILL_MAX_STEP_MS=%s\n' "${GLM53_FAIR_PREFILL_MAX_STEP_MS}"
+    printf 'GLM53_FAIR_PREFILL_MAX_CHUNKS=%s\n' "${GLM53_FAIR_PREFILL_MAX_CHUNKS}"
+    printf 'GLM53_APC_NO_STORE=%s\n' "${GLM53_APC_NO_STORE}"
+    printf 'GLM53_KV_CAPACITY_LOG=%s\n' "${GLM53_KV_CAPACITY_LOG}"
     printf 'GLM53_INDEXER_WORKSPACE=%s\n' "${GLM53_INDEXER_WORKSPACE}"
     printf 'GLM53_SPINWAIT_MS=%s\n' "${GLM53_SPINWAIT_MS}"
     printf 'LONG_PREFILL_TOKEN_THRESHOLD=%s\n' "${LONG_PREFILL_TOKEN_THRESHOLD}"
     printf 'GLM53_DEFAULT_REASONING_EFFORT=%s\n' "${GLM53_DEFAULT_REASONING_EFFORT}"
     printf 'GLM53_ADAPTIVE_K=%s\n' "${GLM53_ADAPTIVE_K}"
     printf 'GLM53_DENSE_FP8=%s\n' "${GLM53_DENSE_FP8}"
+    printf 'GLM53_COOP_GEOMETRY=%s\n' "${GLM53_COOP_GEOMETRY}"
     printf 'GLM53_APC_RETENTION_INTERVAL=%s\n' "${GLM53_APC_RETENTION_INTERVAL}"
     printf 'GLM53_APC_RETENTION_INTERVAL_SWA=%s\n' "${GLM53_APC_RETENTION_INTERVAL_SWA}"
     printf 'VLLM_EXECUTE_MODEL_TIMEOUT_SECONDS=%s\n' "${VLLM_EXECUTE_MODEL_TIMEOUT_SECONDS}"
