@@ -523,9 +523,11 @@ both ranks raised its structured decode median from 61.7 to 65.1 tok/s while
 prose held within noise. Raw model weights and the immutable runtime image are
 still immutable, and optional abliteration, adaptive verification, dense FP8,
 and APC-retention overrides stay off until separately qualified. The profile
-conservatively retains CUDA-graph memory estimation;
-turning `CG_ESTIMATE=0` may recover roughly 2.6 GiB for KV capacity, but is not
-a decode-speed optimization and requires on-kit validation.
+keeps CUDA graphs while disabling vLLM's conservative CUDA-graph KV deduction
+(`CG_ESTIMATE=0`). The v1.6 image profiles about 2.43 GiB for graphs that
+consume roughly 0.19 GiB here; returning that reservation is required for one
+850K request to fit in the E3 KV pool. This is a capacity correction, not a
+decode-speed optimization.
 On workers whose Docker/systemd device cgroup rejects CUDA initialization, the
 adapter grants only the four required NVIDIA character devices and selects the
 registered `nvidia` runtime; it does not run the service privileged.
