@@ -1029,7 +1029,7 @@ models:
     max_num_batched_tokens: 7168
     gpu_memory_utilization: 0.85
     cuda_graph_memory_profiler: true
-    cuda_graph_estimate_deduction: true
+    cuda_graph_estimate_deduction: false
     kv_cache_dtype: fp8
     moe_backend: exl3_e3_grouped
     exl3_fat_kernel: true
