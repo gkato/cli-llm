@@ -1024,7 +1024,7 @@ models:
     activation_dtype: bfloat16
     vram_gb: 204.5
     native_context_len: 1048576
-    max_model_len: 850000
+    max_model_len: 650000
     max_num_seqs: 4
     max_num_batched_tokens: 7168
     gpu_memory_utilization: 0.85
