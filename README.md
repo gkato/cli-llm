@@ -500,7 +500,7 @@ GPU-driven launches per layer while preserving CUDA graphs. The measured default
 [`incoai/GLM-5.3-Flash-DFlash2`](https://huggingface.co/incoai/GLM-5.3-Flash-DFlash2)
 at receipt-matched revision `dc77ff1c99eeb2df044ee3d4f0094eb033fee410`,
 with seven speculative tokens and a TP=2 sharded draft. The reviewed E3 launch
-shape is four sequences, 7168-token prefill chunks, and a conservative 650K
+shape is four sequences, 7168-token prefill chunks, and a conservative 384K
 context default at 0.85 memory
 utilization, right-sized sparse-indexer workspace, FP8 MLA KV, prefix caching,
 and skipped maximum-size multimodal dummy profiling. The v1.6 image adds
@@ -525,11 +525,11 @@ prose held within noise. Raw model weights and the immutable runtime image are
 still immutable, and optional abliteration, adaptive verification, dense FP8,
 and APC-retention overrides stay off until separately qualified. The profile
 keeps CUDA graphs while disabling vLLM's conservative CUDA-graph KV deduction
-(`CG_ESTIMATE=0`). The v1.6 image's actual graph/KV accounting leaves about
-12.44 GiB for KV on the constrained Spark, which vLLM reports as a 706,048-token
-physical ceiling. The checked-in 650K default leaves meaningful boot and KV
-headroom; 850K is a reviewed upstream ceiling, not a portable guarantee. This
-is a capacity correction, not a decode-speed optimization.
+(`CG_ESTIMATE=0`). The v1.6 image's actual graph/KV accounting left 10.36 GiB
+for KV on the constrained Spark, which vLLM reports as a 412,160-token physical
+ceiling. The checked-in 384K default leaves meaningful boot and KV headroom;
+850K is a reviewed upstream ceiling, not a portable guarantee. This is a
+capacity correction, not a decode-speed optimization.
 On workers whose Docker/systemd device cgroup rejects CUDA initialization, the
 adapter grants only the four required NVIDIA character devices and selects the
 registered `nvidia` runtime; it does not run the service privileged.
@@ -702,7 +702,7 @@ No code changes — register a model with provider `openai`, the base URL above,
 | Want NVIDIA-tuned TensorRT-LLM kernels and NVFP4 on Blackwell | **NIM** |
 | DeepSeek V4 Flash 0731 across two linked GB10 nodes | **DSpark cluster** |
 | Qwen3.8 Flash Next NVFP4 at 1M across two linked GB10 nodes | **Qwen Flash Next** |
-| GLM-5.3 Flash EXL3 E3 + DFlash2 at a 650K safe context across two linked GB10 nodes | **GLM Flash** |
+| GLM-5.3 Flash EXL3 E3 + DFlash2 at a 384K safe context across two linked GB10 nodes | **GLM Flash** |
 | DeepSeek V4 Flash 0731 on one dedicated GB10 at 384K | **DSpark One** |
 | Fine-tuning | none — stop the server, run `Makefile.gb10` |
 
@@ -744,7 +744,7 @@ tuning. A representative slice of what's registered:
 | `qwen2.5-coder-32b` (llama.cpp) | Q8_0 GGUF with `--jinja` — real tool calling for agentic coders |
 | `qwen3.8-flash-next-nvfp4-dspark` | Dual-Spark SGLang TP2, SM121 QSA + NVFP4-KV patch, 1M YaRN profile |
 | `qwen3.8-flash-next-nvfp4-vllm-dspark` | Current MiaAI dual-Spark vLLM TP2+EP+MTP3, measured BF16-KV 1M profile |
-| `glm-5.3-flash-nvfp4-dspark` | Legacy key for dual-Spark EXL3 E3/MP TP2 + DFlash2, 650K safe profile |
+| `glm-5.3-flash-nvfp4-dspark` | Legacy key for dual-Spark EXL3 E3/MP TP2 + DFlash2, 384K safe profile |
 | `deepseek-v4-flash-0731-dspark-one` | One-Spark TP=1 EXL3 recipe, 384K single-request profile |
 
 Adding an entry:
@@ -1164,7 +1164,7 @@ ml-compute/
 │   ├── dspark-spark4e89-thinkstationpgx.env   dual-Spark DeepSeek profile
 │   ├── dspark-qwen38-flash-next-nvfp4.env     dual-Spark Qwen 1M NVFP4-KV profile
 │   ├── dspark-qwen38-flash-next-vllm.env      current MiaAI Qwen vLLM performance profile
-│   ├── dspark-glm53-flash-nvfp4.env            dual-Spark GLM EXL3 E3 650K safe profile (legacy name)
+│   ├── dspark-glm53-flash-nvfp4.env            dual-Spark GLM EXL3 E3 384K safe profile (legacy name)
 │   └── dspark-one-deepseek-v4-flash-0731.env  one-Spark 384K profile
 ├── Makefile.gb10               LoRA fine-tuning on DGX Spark (bf16, HF+PEFT+TRL)
 ├── Makefile.distill            Distillation data pipeline (+ x86 QLoRA train)

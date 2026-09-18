@@ -81,7 +81,7 @@ Reviewed MiaAI profile:
   - fused EXL3/TR3 K4 routed experts with native SM121 cubins
   - direct vLLM multiprocessing executor, two nodes, TP=2
   - DFlash2 k=7 on draft TP=2; MTP k=2 remains the rollback mode
-  - E3 grouped fat-expert MoE, 650K safe context, 4 sequences, 7168-token chunks
+  - E3 grouped fat-expert MoE, 384K safe context, 4 sequences, 7168-token chunks
   - right-sized sparse-indexer workspace, 0.85 UMA budget, FP8 MLA KV
   - padded DFlash2/MLA KV slot-sharing and corrected hybrid prefix hits
   - bounded K-pool tail slot mapping for safe long generations
@@ -153,7 +153,7 @@ TENSOR_PARALLEL_SIZE|2
 NUM_NODES|2
 DISTRIBUTED_EXECUTOR_BACKEND|mp
 QUANTIZATION|exl3
-MAX_MODEL_LEN|650000
+MAX_MODEL_LEN|384000
 MAX_NUM_SEQS|4
 MAX_NUM_BATCHED_TOKENS|7168
 GPU_MEMORY_UTILIZATION|0.85
