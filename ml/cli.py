@@ -1128,6 +1128,28 @@ GLM53_FLASH_ACTIONS = [
     "update", "all", "path", "help",
 ]
 
+GLM53_FLASH_TENSORFOLD_ACTIONS = [
+    "bootstrap", "configure", "setup", "prepare", "download", "start",
+    "restart", "stop", "status", "logs", "smoke", "path", "help",
+]
+
+
+@cli.command("glm53-flash-tensorfold")
+@click.argument(
+    "action", required=False, default="help",
+    type=click.Choice(GLM53_FLASH_TENSORFOLD_ACTIONS, case_sensitive=False),
+)
+def glm53_flash_tensorfold_cmd(action: str):
+    """Manage MiaAI's TensorFold GLM-5.3 Flash recipe on two DGX Sparks."""
+    script = (
+        Path(__file__).resolve().parent.parent
+        / "scripts" / "GLM53-Flash-TensorFold-Dual-DSpark.sh"
+    )
+    if not script.is_file():
+        raise click.ClickException(f"TensorFold recipe not found: {script}")
+    result = subprocess.run([str(script), action], check=False)
+    raise click.exceptions.Exit(result.returncode)
+
 
 @cli.command("glm53-flash")
 @click.argument(
