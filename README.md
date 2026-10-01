@@ -18,6 +18,7 @@ API; lightweight vision detectors use a small task-specific `/v1` API:
 | **Qwen Flash Next** | MiaAI SGLang TP2 on two GB10 nodes | Qwen3.8 Flash Next NVFP4 | `qwen38-flash-next <action>` |
 | **Qwen Flash Next vLLM** | Current MiaAI vLLM TP2+EP+MTP3 on two GB10 nodes | Qwen3.8 Flash Next NVFP4 | `qwen38-flash-next-vllm <action>` |
 | **GLM Flash** | Dedicated vLLM + MP TP2 on two GB10 nodes | GLM-5.3 Flash EXL3 + DFlash2 | `glm53-flash <action>` |
+| **GLM Flash TensorFold** | MiaAI TensorFold v0.6.0 on two GB10 nodes | GLM-5.3 Flash EXL3, 1M context | `glm53-flash-tensorfold <action>` |
 | **DSpark One** | MiaAI SparkInfer/EXL3 on one dedicated GB10 | DeepSeek V4 Flash 0731 | `dspark-one <action>` |
 | **Qwen3.8 27B SGLang** | MiaAI SGLang/DSpark on one GB10 | Qwen3.8 27B NVFP4 | `qwen38-27b-sglang <action>` |
 
