@@ -1129,7 +1129,7 @@ GLM53_FLASH_ACTIONS = [
 ]
 
 GLM53_FLASH_TENSORFOLD_ACTIONS = [
-    "bootstrap", "configure", "setup", "prepare", "download", "start",
+    "bootstrap", "update", "configure", "setup", "prepare", "download", "start",
     "restart", "stop", "status", "logs", "smoke", "path", "help",
 ]
 
@@ -1203,6 +1203,32 @@ QWEN38_27B_SGLANG_ACTIONS = [
     "bootstrap", "configure", "check", "setup", "start", "status", "smoke",
     "logs", "stop", "update", "path", "help",
 ]
+
+QWEN38_27B_TENSORFOLD_ACTIONS = [
+    "bootstrap", "update", "configure", "check", "setup", "prepare",
+    "download", "start", "restart", "stop", "status", "logs", "smoke",
+    "path", "help",
+]
+
+
+@cli.command("qwen38-27b-tensorfold")
+@click.argument(
+    "action",
+    required=False,
+    default="help",
+    type=click.Choice(QWEN38_27B_TENSORFOLD_ACTIONS, case_sensitive=False),
+)
+def qwen38_27b_tensorfold_cmd(action: str):
+    """Manage Qwen3.8-27B TensorFold on one dedicated DGX Spark."""
+    script = (
+        Path(__file__).resolve().parent.parent
+        / "scripts"
+        / "Qwen38-27B-TensorFold-DSpark.sh"
+    )
+    if not script.is_file():
+        raise click.ClickException(f"Qwen3.8-27B TensorFold recipe not found: {script}")
+    result = subprocess.run([str(script), action], check=False)
+    raise click.exceptions.Exit(result.returncode)
 
 
 @cli.command("qwen38-27b-sglang")

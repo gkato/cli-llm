@@ -4,7 +4,7 @@ Local LLM inference and fine-tuning on your own hardware. Built for the **NVIDIA
 (GB10)** — Grace CPU + Blackwell GPU with 128 GB unified memory — and works on any local
 box with an NVIDIA GPU.
 
-One CLI, ten serving backends. Language models use the OpenAI-compatible `/v1`
+One CLI, multiple serving backends. Language models use the OpenAI-compatible `/v1`
 API; lightweight vision detectors use a small task-specific `/v1` API:
 
 | Backend | Runs | Weights | Command |
@@ -20,6 +20,7 @@ API; lightweight vision detectors use a small task-specific `/v1` API:
 | **GLM Flash** | Dedicated vLLM + MP TP2 on two GB10 nodes | GLM-5.3 Flash EXL3 + DFlash2 | `glm53-flash <action>` |
 | **GLM Flash TensorFold** | MiaAI TensorFold v0.6.0 on two GB10 nodes | GLM-5.3 Flash EXL3, 1M context | `glm53-flash-tensorfold <action>` |
 | **DSpark One** | MiaAI SparkInfer/EXL3 on one dedicated GB10 | DeepSeek V4 Flash 0731 | `dspark-one <action>` |
+| **Qwen3.8 27B TensorFold** | MiaAI TensorFold v0.6.0 on one GB10 | Qwen3.8 27B MLX 4-bit + DFlash2 | `qwen38-27b-tensorfold <action>` |
 | **Qwen3.8 27B SGLang** | MiaAI SGLang/DSpark on one GB10 | Qwen3.8 27B NVFP4 | `qwen38-27b-sglang <action>` |
 
 An optional streaming router exposes several resident services through one
@@ -370,6 +371,33 @@ Set `QWEN38_BENCH_RUNS`, `QWEN38_BENCH_MAX_TOKENS`, or
 request time, first-byte latency, completion-token count, and a decode tok/s
 estimate for each measured run.
 
+### Qwen3.8 27B TensorFold (one DGX Spark)
+
+The TensorFold alternative wraps [MiaAI-Lab's one-Spark
+recipe](https://github.com/MiaAI-Lab/Qwen3.8-27B-DGX-Spark-TensorFold) at
+revision `c11ff138871cf43d12898d79dbfa4dc952d17ca4`. It pins the roughly
+15 GiB MLX affine 4-bit checkpoint, the DFlash2 drafter, and the published
+arm64 image by digest. The reviewed profile serves eight concurrent requests
+at the model's native 262,144-token context with FP8 prompt activations, an
+FP8 attention cache, an automatically sized pinned KV pool, and image/video
+input. The raw API stays on loopback port 8888; the authenticated proxy owns
+public port 8000.
+
+```bash
+python3 -m ml.cli qwen38-27b-tensorfold setup
+python3 -m ml.cli qwen38-27b-tensorfold start
+python3 -m ml.cli qwen38-27b-tensorfold smoke
+```
+
+`setup` pins the upstream checkout and immutable image, downloads the exact
+target/drafter snapshots, and records those snapshot refs for offline starts.
+Configuration lives in
+[`config/dspark-qwen38-27b-tensorfold.env`](config/dspark-qwen38-27b-tensorfold.env).
+The default `TENSORFOLD_MEMORY_RESERVE_GIB=0` maximizes the KV pool but leaves
+little room for co-resident workloads; increase it or reduce `KV_POOL_GB` on a
+shared Spark. Change `QWEN38_TF_YARN_FACTOR` to `4` in that profile only after
+qualifying YaRN quality and the smaller pool at a 1M-token window.
+
 ### Qwen3.8 Flash Next SGLang (two linked GB10 systems)
 
 The Qwen path wraps
@@ -488,11 +516,11 @@ stop one before starting the other.
 ### GLM-5.3 Flash EXL3 + DFlash2 (two linked GB10 systems)
 
 The GLM path serves
-[`brandonmusic/GLM-5.3-Flash-tr3-4bpw`](https://huggingface.co/brandonmusic/GLM-5.3-Flash-tr3-4bpw),
-a roughly 164 GiB EXL3/TR3 quantization of the multimodal 320B/18B-active MoE.
+[`Mia-AiLab/GLM-5.3-Flash-EXL3-4bpw-TensorFold`](https://huggingface.co/Mia-AiLab/GLM-5.3-Flash-EXL3-4bpw-TensorFold),
+a roughly 164 GiB EXL3 quantization of the multimodal 320B/18B-active MoE.
 The lifecycle wraps [MiaAI-Lab's EXL3 dual-DGX-Spark recipe](https://github.com/MiaAI-Lab/GLM-5.3-Flash-EXL3-2x-DGX-Sparks)
-at pinned revision `56d0bdfbaa961283d1c54e61f4e67fcb1b9d37b9` (MiaAI v1.6.0), and pins the
-measured target snapshot `5ab363a8dcf6405955fd5f99671e01a1c9fb124b`.
+at pinned revision `a8cc40ddef876f033e0f1b4d8f178b0fee2a5351`, and pins the
+target snapshot `76c0b5173166d2795dd48860f45d8224817f894c`.
 
 This replaces the previous NVFP4/Ray profile. It removes Ray and its object
 stores and joins one vLLM multiprocessing rank per Spark directly at TP=2. The
@@ -504,7 +532,7 @@ with seven speculative tokens and a TP=2 sharded draft. The reviewed E3 launch
 shape is four sequences, 7168-token prefill chunks, and a conservative 384K
 context default at 0.85 memory
 utilization, right-sized sparse-indexer workspace, FP8 MLA KV, prefix caching,
-and skipped maximum-size multimodal dummy profiling. The v1.6 image adds
+and skipped maximum-size multimodal dummy profiling. The current image adds
 InstantTensor direct I/O, fair mixed-prefill scheduling (256-token chunks, 30%
 fair share, 2-second mixed-step limit), and bounded image processing (2,048
 tokens/image with a 1 GiB media cache). Fair scheduling prevents new C2/C4
@@ -515,6 +543,8 @@ faster prefill and roughly 2.4 GiB more UMA headroom per node. The overlay also
 fixes hybrid prefix-cache hits, keeps long peer prefills off active decode
 steps, persists Triton/TileLang caches, warms common shapes after health, and
 keeps client stop strings dormant until GLM exits its reasoning block.
+Cold-load UMA staging and host-memory cleanup reduce startup pressure, while
+the boot canary validates DFlash acceptance before the endpoint is advertised.
 The newer upstream also carries XGrammar speculative-termination fixes, clamps
 K-pool tail slot mapping so long generations cannot write through an
 out-of-range block-table entry, supports a separate RoCEv2 GID index per rank,
@@ -595,6 +625,33 @@ python3 -m ml.cli glm53-flash logs-worker
 python3 -m ml.cli glm53-flash stop
 ```
 
+### GLM-5.3 Flash TensorFold (two linked GB10 systems)
+
+The TensorFold backend is independently pinned to [MiaAI-Lab's current
+recipe](https://github.com/MiaAI-Lab/GLM-5.3-Flash-EXL3-2x-DGX-Sparks-TensorFold)
+at revision `3fd60dfc836fab0f1ed0fd4f0afaf2a1d62b2aab`. The update uses the
+recipe's current EXL3 target and DFlash2 snapshots plus its published
+`v0.6.0-e66c657a433d` image digest. It enables four streams at the native 1M
+context, FP8 KV, concurrent prefill, shared-system-prefix reuse, and 2,048-row
+interleaved fill chunks. This profile retains `DENSE=fp8` for the more robust
+non-English end-of-turn behavior documented upstream; the faster upstream
+`q4` dense default is a separate quality trade-off.
+
+```bash
+python3 -m ml.cli glm53-flash-tensorfold setup
+python3 -m ml.cli glm53-flash-tensorfold start
+python3 -m ml.cli glm53-flash-tensorfold smoke
+```
+
+The adapter now supports a safe `update` action, refuses to overwrite unrelated
+tracked changes in the runtime checkout, and applies the GB10 CUDA runtime
+compatibility overlay without dropping launcher execute permissions. Raw
+TensorFold binds to `127.0.0.1:8888`; port 8000 remains the authenticated API.
+The checked-in profile is
+[`config/dspark-glm53-flash-tensorfold.env`](config/dspark-glm53-flash-tensorfold.env).
+DFlash2 is CC BY-NC-ND 4.0 and is therefore non-commercial; use the upstream
+`DRAFTER=mtp` path when that restriction is unsuitable.
+
 ### DSpark One (one dedicated GB10 system)
 
 The third-Spark path wraps
@@ -657,6 +714,8 @@ python3 -m ml.cli nim stop                    # NIM has its own lifecycle
 python3 -m ml.cli dspark stop                 # stops both cluster nodes
 python3 -m ml.cli qwen38-flash-next stop      # stops Qwen on both cluster nodes
 python3 -m ml.cli glm53-flash stop            # stops GLM MP/vLLM on both nodes
+python3 -m ml.cli glm53-flash-tensorfold stop # stops GLM TensorFold on both nodes
+python3 -m ml.cli qwen38-27b-tensorfold stop  # stops Qwen TensorFold on one node
 python3 -m ml.cli dspark-one stop             # stops the independent one-Spark service
 ```
 

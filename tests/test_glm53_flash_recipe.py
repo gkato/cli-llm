@@ -37,7 +37,7 @@ class GLM53FlashRecipeTests(unittest.TestCase):
         self.assertEqual(profile["HOST_BIND"], "127.0.0.1")
         self.assertEqual(profile["PORT"], "8888")
         self.assertEqual(profile["DSPARK_PROXY_PORT"], "8000")
-        self.assertEqual(profile["MODEL_ID"], "brandonmusic/GLM-5.3-Flash-tr3-4bpw")
+        self.assertEqual(profile["MODEL_ID"], "Mia-AiLab/GLM-5.3-Flash-EXL3-4bpw-TensorFold")
         self.assertEqual(profile["QUANTIZATION"], "exl3")
         self.assertEqual(profile["MAX_MODEL_LEN"], "384000")
         self.assertEqual(profile["MAX_NUM_SEQS"], "4")
@@ -70,6 +70,11 @@ class GLM53FlashRecipeTests(unittest.TestCase):
         self.assertEqual(profile["VLLM_EXECUTE_MODEL_TIMEOUT_SECONDS"], "1800")
         self.assertEqual(profile["GLM53_BOOT_SHAPE_WARMUP"], "1")
         self.assertEqual(profile["GLM53_WARMUP_REQ_TIMEOUT"], "240")
+        self.assertEqual(profile["GLM53_WARMUP_CANARY"], "1")
+        self.assertEqual(profile["GLM53_WARMUP_CANARY_MIN_DRAFTS"], "64")
+        self.assertEqual(profile["GLM53_HOST_MEM_HYGIENE"], "1")
+        self.assertEqual(profile["GLM53_COLD_LOAD_UMA"], "1")
+        self.assertEqual(profile["GLM53_COLD_LOAD_STAGE_MMAP"], "1")
         self.assertEqual(profile["CG_ESTIMATE"], "0")
         self.assertEqual(profile["SKIP_MM_PROFILING"], "1")
         self.assertEqual(profile["LIMIT_MM"], '{"image":48,"video":1}')
@@ -90,7 +95,7 @@ class GLM53FlashRecipeTests(unittest.TestCase):
         self.assertEqual(profile["WORKER_GID"], "")
         self.assertEqual(
             profile["VLLM_IMAGE"],
-            "ml-compute/glm53-flash-exl3:mp-dflash2-v6-56d0bdf",
+            "ml-compute/glm53-flash-exl3:mp-dflash2-v7-a8cc40d",
         )
         self.assertEqual(
             profile["VLLM_SOURCE_IMAGE"],
@@ -111,7 +116,7 @@ class GLM53FlashRecipeTests(unittest.TestCase):
         self.assertEqual(model["tensor_parallel_size"], 2)
         self.assertEqual(model["distributed_executor_backend"], "mp")
         self.assertEqual(model["runtime"], "vllm")
-        self.assertEqual(model["hf_id"], "brandonmusic/GLM-5.3-Flash-tr3-4bpw")
+        self.assertEqual(model["hf_id"], "Mia-AiLab/GLM-5.3-Flash-EXL3-4bpw-TensorFold")
         self.assertEqual(model["max_model_len"], 384000)
         self.assertEqual(model["max_num_seqs"], 4)
         self.assertEqual(model["max_num_batched_tokens"], 7168)
@@ -128,15 +133,15 @@ class GLM53FlashRecipeTests(unittest.TestCase):
         self.assertTrue(model["verified_on_gb10"])
         self.assertEqual(
             model["upstream_revision"],
-            "56d0bdfbaa961283d1c54e61f4e67fcb1b9d37b9",
+            "a8cc40ddef876f033e0f1b4d8f178b0fee2a5351",
         )
         self.assertEqual(
             model["model_revision"],
-            "5ab363a8dcf6405955fd5f99671e01a1c9fb124b",
+            "76c0b5173166d2795dd48860f45d8224817f894c",
         )
         self.assertEqual(
             model["runtime_image"],
-            "ml-compute/glm53-flash-exl3:mp-dflash2-v6-56d0bdf",
+            "ml-compute/glm53-flash-exl3:mp-dflash2-v7-a8cc40d",
         )
         self.assertEqual(
             model["runtime_source_image"],
@@ -145,7 +150,7 @@ class GLM53FlashRecipeTests(unittest.TestCase):
         )
         self.assertEqual(
             model["runtime_kernel_patch"],
-            "exl3-e3-grouped-sm121-dflash2-fair-v5-instanttensor-apc-overlay",
+            "exl3-e3-grouped-sm121-dflash2-fair-v7-coldload-canary",
         )
         self.assertEqual(model["dflash_kv_slot_sharing"], "padded_mla")
         self.assertEqual(model["mixed_prefill_policy"], "fair")
@@ -182,11 +187,11 @@ class GLM53FlashRecipeTests(unittest.TestCase):
         script = SCRIPT.read_text(encoding="utf-8")
 
         self.assertIn(
-            'UPSTREAM_REVISION_DEFAULT="56d0bdfbaa961283d1c54e61f4e67fcb1b9d37b9"',
+            'UPSTREAM_REVISION_DEFAULT="a8cc40ddef876f033e0f1b4d8f178b0fee2a5351"',
             script,
         )
         self.assertIn(
-            'MODEL_REVISION_DEFAULT="5ab363a8dcf6405955fd5f99671e01a1c9fb124b"',
+            'MODEL_REVISION_DEFAULT="76c0b5173166d2795dd48860f45d8224817f894c"',
             script,
         )
         self.assertIn(
@@ -206,6 +211,9 @@ class GLM53FlashRecipeTests(unittest.TestCase):
         self.assertIn("VLLM_EXECUTE_MODEL_TIMEOUT_SECONDS", script)
         self.assertIn("GLM53_BOOT_SHAPE_WARMUP", script)
         self.assertIn("GLM53_WARMUP_REQ_TIMEOUT", script)
+        self.assertIn("GLM53_WARMUP_CANARY", script)
+        self.assertIn("GLM53_HOST_MEM_HYGIENE", script)
+        self.assertIn("GLM53_COLD_LOAD_UMA", script)
         self.assertIn("CG_ESTIMATE", script)
         self.assertIn('[[ "${ABLIT}" == "0" ]]', script)
         self.assertIn("check_roce_gid_indices", script)

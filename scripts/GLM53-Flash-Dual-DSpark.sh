@@ -22,14 +22,15 @@ RECIPE_DIR_DEFAULT="${RUNTIME_DIR_DEFAULT}/miaai-exl3-dual-spark"
 PROJECT_ENV_FILE_DEFAULT="${PROJECT_ROOT}/.env.local"
 
 UPSTREAM_REPO_DEFAULT="https://github.com/MiaAI-Lab/GLM-5.3-Flash-EXL3-2x-DGX-Sparks.git"
-UPSTREAM_REVISION_DEFAULT="56d0bdfbaa961283d1c54e61f4e67fcb1b9d37b9"
-MODEL_ID_DEFAULT="brandonmusic/GLM-5.3-Flash-tr3-4bpw"
-MODEL_REVISION_DEFAULT="5ab363a8dcf6405955fd5f99671e01a1c9fb124b"
+UPSTREAM_REVISION_DEFAULT="a8cc40ddef876f033e0f1b4d8f178b0fee2a5351"
+MODEL_ID_DEFAULT="Mia-AiLab/GLM-5.3-Flash-EXL3-4bpw-TensorFold"
+MODEL_REVISION_DEFAULT="76c0b5173166d2795dd48860f45d8224817f894c"
 DFLASH_MODEL_ID_DEFAULT="incoai/GLM-5.3-Flash-DFlash2"
 DFLASH_MODEL_REVISION_DEFAULT="dc77ff1c99eeb2df044ee3d4f0094eb033fee410"
 VLLM_BASE_IMAGE_DEFAULT="vllm/vllm-openai:glm53-flash-arm64-cu130@sha256:905c02933be6021301db2dc284e24e3727467aa3a0f63b41d609885778a07bce"
 VLLM_SOURCE_IMAGE_DEFAULT="ghcr.io/miaai-lab/glm-5.3-flash-2x-dgx-sparks@sha256:447114ee77d14c9b4732ee23978ada2a0ee9027868a231d6fd42700a8b25be1d"
-VLLM_IMAGE_DEFAULT="ml-compute/glm53-flash-exl3:mp-dflash2-v6-56d0bdf"
+VLLM_IMAGE_DEFAULT="ml-compute/glm53-flash-exl3:mp-dflash2-v7-a8cc40d"
+TARGET_MIN_SHARDS=83
 
 PROFILE_FILE="${GLM53_DSPARK_CONFIG_FILE:-${PROFILE_FILE_DEFAULT}}"
 RUNTIME_DIR="${GLM53_DSPARK_RUNTIME_DIR:-${RUNTIME_DIR_DEFAULT}}"
@@ -208,6 +209,11 @@ GLM53_APC_RETENTION_INTERVAL_SWA|
 VLLM_EXECUTE_MODEL_TIMEOUT_SECONDS|1800
 GLM53_BOOT_SHAPE_WARMUP|1
 GLM53_WARMUP_REQ_TIMEOUT|240
+GLM53_WARMUP_CANARY|1
+GLM53_WARMUP_CANARY_MIN_DRAFTS|64
+GLM53_HOST_MEM_HYGIENE|1
+GLM53_COLD_LOAD_UMA|1
+GLM53_COLD_LOAD_STAGE_MMAP|1
 CG_ESTIMATE|0
 ABLIT|0
 USE_HOST_NCCL|0
@@ -324,6 +330,11 @@ GLM53_APC_RETENTION_INTERVAL_SWA
 VLLM_EXECUTE_MODEL_TIMEOUT_SECONDS
 GLM53_BOOT_SHAPE_WARMUP
 GLM53_WARMUP_REQ_TIMEOUT
+GLM53_WARMUP_CANARY
+GLM53_WARMUP_CANARY_MIN_DRAFTS
+GLM53_HOST_MEM_HYGIENE
+GLM53_COLD_LOAD_UMA
+GLM53_COLD_LOAD_STAGE_MMAP
 CG_ESTIMATE
 ABLIT
 USE_HOST_NCCL
@@ -706,7 +717,7 @@ verify_target_snapshot() {
   [[ -f "${snapshot}/config.json" ]] || die "${label}: missing config.json"
   [[ -f "${snapshot}/model.safetensors.index.json" ]] || die "${label}: missing model index"
   count="$(find -L "${snapshot}" -maxdepth 1 -type f -name '*.safetensors' | wc -l | tr -d ' ')"
-  (( count >= 120 )) || die "${label}: only ${count}/120 target shards are present"
+  (( count >= TARGET_MIN_SHARDS )) || die "${label}: only ${count}/${TARGET_MIN_SHARDS} target shards are present"
   log "${label}: EXL3 snapshot verified (${count} shards)"
 }
 
@@ -720,7 +731,7 @@ verify_dflash_snapshot() {
 verify_worker_snapshots() {
   local target draft command
   target="$(worker_snapshot_path "${MODEL_ID}" "${MODEL_REVISION}")"
-  command="test -f '${target}/config.json' && test -f '${target}/model.safetensors.index.json' && test \"\$(find -L '${target}' -maxdepth 1 -type f -name '*.safetensors' | wc -l)\" -ge 120"
+  command="test -f '${target}/config.json' && test -f '${target}/model.safetensors.index.json' && test \"\$(find -L '${target}' -maxdepth 1 -type f -name '*.safetensors' | wc -l)\" -ge ${TARGET_MIN_SHARDS}"
   if [[ "${SPEC_METHOD}" == "dflash" ]]; then
     draft="$(worker_snapshot_path "${DFLASH_MODEL_ID}" "${DFLASH_MODEL_REVISION}")"
     command+=" && test -f '${draft}/config.json' && test -f '${draft}/model.safetensors'"
@@ -909,6 +920,11 @@ write_upstream_env() {
     printf 'VLLM_EXECUTE_MODEL_TIMEOUT_SECONDS=%s\n' "${VLLM_EXECUTE_MODEL_TIMEOUT_SECONDS}"
     printf 'GLM53_BOOT_SHAPE_WARMUP=%s\n' "${GLM53_BOOT_SHAPE_WARMUP}"
     printf 'GLM53_WARMUP_REQ_TIMEOUT=%s\n' "${GLM53_WARMUP_REQ_TIMEOUT}"
+    printf 'GLM53_WARMUP_CANARY=%s\n' "${GLM53_WARMUP_CANARY}"
+    printf 'GLM53_WARMUP_CANARY_MIN_DRAFTS=%s\n' "${GLM53_WARMUP_CANARY_MIN_DRAFTS}"
+    printf 'GLM53_HOST_MEM_HYGIENE=%s\n' "${GLM53_HOST_MEM_HYGIENE}"
+    printf 'GLM53_COLD_LOAD_UMA=%s\n' "${GLM53_COLD_LOAD_UMA}"
+    printf 'GLM53_COLD_LOAD_STAGE_MMAP=%s\n' "${GLM53_COLD_LOAD_STAGE_MMAP}"
     printf 'CG_ESTIMATE=%s\n' "${CG_ESTIMATE}"
     printf 'ABLIT=%s\n' "${ABLIT}"
     printf 'CONTAINER_HEAD=%s\n' "${GLM53_HEAD_CONTAINER}"

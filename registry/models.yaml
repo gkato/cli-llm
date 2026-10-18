@@ -987,31 +987,82 @@ models:
     harness_coexistence: false
     cluster_profile: config/dspark-qwen38-flash-next-vllm.env
 
+  # GLM-5.3 Flash through MiaAI's TensorFold v0.6.0 recipe. This remains a
+  # separate backend from the direct-MP vLLM recipe below.
+  glm-5.3-flash-exl3-tensorfold-dspark:
+    hf_id: Mia-AiLab/GLM-5.3-Flash-EXL3-4bpw-TensorFold
+    served_model_name: GLM-5.3-Flash-EXL3
+    serve_backend: glm53-flash-tensorfold
+    external_recipe: scripts/GLM53-Flash-TensorFold-Dual-DSpark.sh
+    upstream_repo: https://github.com/MiaAI-Lab/GLM-5.3-Flash-EXL3-2x-DGX-Sparks-TensorFold
+    upstream_revision: 3fd60dfc836fab0f1ed0fd4f0afaf2a1d62b2aab
+    upstream_license: Apache-2.0
+    model_card: https://huggingface.co/Mia-AiLab/GLM-5.3-Flash-EXL3-4bpw-TensorFold
+    model_revision: 078455ffe6472f9a52fbc1139f58b9db2881b25c
+    model_license: Apache-2.0
+    source_available: true
+    nodes: 2
+    tensor_parallel_size: 2
+    runtime: tensorfold
+    runtime_version: v0.6.0
+    runtime_image: ghcr.io/miaai-lab/glm-5.3-flash-exl3-2x-dgx-sparks-tensorfold@sha256:14b5072e8e9918f1080153f57321415a387bc7d78cf9c9b44a7aeae2d4399ccf
+    runtime_image_tag: v0.6.0-e66c657a433d
+    runtime_base_image: nvcr.io/nvidia/pytorch:26.07-py3
+    architecture: glm5_next
+    parameters_total_billion: 320
+    parameters_active_billion: 18
+    checkpoint_size_gib: 164
+    quantization: exl3
+    bits_per_weight: 4
+    dense_weight_dtype: fp8
+    kv_cache_dtype: fp8
+    native_context_len: 1048576
+    max_model_len: 1048576
+    max_num_seqs: 4
+    speculative_method: dflash2
+    speculative_draft_model: incoai/GLM-5.3-Flash-DFlash2
+    speculative_draft_revision: bf582e4eacc1810f76656d1811693ff6c6737d2a
+    speculative_draft_license: CC-BY-NC-ND-4.0
+    multi_prefill: true
+    shared_prefix: true
+    fill_rows: 2048
+    multimodal: true
+    inputs:
+      - text
+      - image
+      - video
+    raw_api_url: http://127.0.0.1:8888
+    proxy_bind: 0.0.0.0:8000
+    proxy_url: http://127.0.0.1:8000
+    verified_on_gb10: true
+    dedicated_cluster: true
+    machine_profile: config/dspark-glm53-flash-tensorfold.env
+
   # GLM-5.3 Flash EXL3 + DFlash2 on two linked DGX Sparks. The legacy registry
   # key is retained for callers that already select it, but the implementation
   # is MiaAI-Lab's E3 grouped-EXL3 direct-MP recipe (not NVFP4/Ray).
   # ml-compute retains immutable model/image pins and keeps raw vLLM on
   # loopback behind the authenticated proxy.
   glm-5.3-flash-nvfp4-dspark:
-    hf_id: brandonmusic/GLM-5.3-Flash-tr3-4bpw
+    hf_id: Mia-AiLab/GLM-5.3-Flash-EXL3-4bpw-TensorFold
     served_model_name: GLM-5.3-Flash-EXL3
     serve_backend: glm53-flash
     external_recipe: scripts/GLM53-Flash-Dual-DSpark.sh
     upstream_repo: https://github.com/MiaAI-Lab/GLM-5.3-Flash-EXL3-2x-DGX-Sparks
-    upstream_revision: 56d0bdfbaa961283d1c54e61f4e67fcb1b9d37b9
+    upstream_revision: a8cc40ddef876f033e0f1b4d8f178b0fee2a5351
     upstream_license: AGPL-3.0
-    model_card: https://huggingface.co/brandonmusic/GLM-5.3-Flash-tr3-4bpw
-    model_revision: 5ab363a8dcf6405955fd5f99671e01a1c9fb124b
-    model_license: shapleymcg-1.0
+    model_card: https://huggingface.co/Mia-AiLab/GLM-5.3-Flash-EXL3-4bpw-TensorFold
+    model_revision: 76c0b5173166d2795dd48860f45d8224817f894c
+    model_license: apache-2.0
     source_available: true
     nodes: 2
     tensor_parallel_size: 2
     distributed_executor_backend: mp
     runtime: vllm
-    runtime_image: ml-compute/glm53-flash-exl3:mp-dflash2-v6-56d0bdf
+    runtime_image: ml-compute/glm53-flash-exl3:mp-dflash2-v7-a8cc40d
     runtime_source_image: ghcr.io/miaai-lab/glm-5.3-flash-2x-dgx-sparks@sha256:447114ee77d14c9b4732ee23978ada2a0ee9027868a231d6fd42700a8b25be1d
     runtime_base_image: vllm/vllm-openai:glm53-flash-arm64-cu130@sha256:905c02933be6021301db2dc284e24e3727467aa3a0f63b41d609885778a07bce
-    runtime_kernel_patch: exl3-e3-grouped-sm121-dflash2-fair-v5-instanttensor-apc-overlay
+    runtime_kernel_patch: exl3-e3-grouped-sm121-dflash2-fair-v7-coldload-canary
     runtime_load_format: instanttensor
     exllamav3_revision: c5d9c657966ffeeaa9353f0cc899f18629da4a13
     architecture: glm5_next
@@ -1123,6 +1174,56 @@ models:
     dedicated_host: true
     harness_coexistence: false
     machine_profile: config/dspark-one-deepseek-v4-flash-0731.env
+
+  # Qwen3.8-27B MLX affine 4-bit through TensorFold on one dedicated GB10.
+  qwen3.8-27b-mlx-tensorfold-dspark:
+    hf_id: Vontra/Qwen3.8-27B-MLX-4bit
+    served_model_name: Qwen3.8-27B
+    serve_backend: qwen38-27b-tensorfold
+    external_recipe: scripts/Qwen38-27B-TensorFold-DSpark.sh
+    upstream_repo: https://github.com/MiaAI-Lab/Qwen3.8-27B-DGX-Spark-TensorFold
+    upstream_revision: c11ff138871cf43d12898d79dbfa4dc952d17ca4
+    upstream_license: Apache-2.0
+    model_card: https://huggingface.co/Vontra/Qwen3.8-27B-MLX-4bit
+    model_revision: 22d8d538154e0e5b6f8dcb1fcc74a60a0798104c
+    model_license: Apache-2.0
+    source_available: true
+    nodes: 1
+    tensor_parallel_size: 1
+    runtime: tensorfold
+    runtime_version: v0.6.0
+    runtime_image: ghcr.io/miaai-lab/qwen3.8-27b-dgx-spark-tensorfold@sha256:043d192b9e1725f55c5439fc9672055de891433e5b31448ed8963918e3c460e9
+    runtime_image_tag: v0.6.0-fb91a0019fdc
+    runtime_base_image: nvcr.io/nvidia/pytorch:26.07-py3
+    architecture: qwen3_5
+    parameters_total_billion: 27
+    checkpoint_size_gib: 14.95
+    quantization: mlx_affine_4bit
+    bits_per_weight: 4.695
+    quantization_group_size: 64
+    native_context_len: 262144
+    max_model_len: 262144
+    max_num_seqs: 8
+    kv_cache_dtype: fp8_e4m3
+    kv_pool_gib: 78
+    kv_pool_tokens: 2555904
+    prefill_dtype: fp8_e4m3
+    speculative_method: dflash2
+    speculative_draft_model: z-lab/Qwen3.8-27B-DFlash2
+    speculative_draft_revision: 50307d4c4cde6860d4eee73e2547cd786fe8e8a4
+    speculative_draft_license: Apache-2.0
+    multimodal: true
+    inputs:
+      - text
+      - image
+      - video
+    raw_api_url: http://127.0.0.1:8888
+    proxy_bind: 0.0.0.0:8000
+    proxy_url: http://127.0.0.1:8000
+    default_thinking: true
+    verified_on_gb10: true
+    dedicated_host: true
+    machine_profile: config/dspark-qwen38-27b-tensorfold.env
 
   # Qwen3.8-27B NVFP4 on one dedicated GB10. This is MiaAI-Lab's SGLang
   # recipe, pinned independently from the two-node Qwen Flash Next paths.
