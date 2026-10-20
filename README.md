@@ -384,7 +384,9 @@ in [`config/dspark-deepseek-v41-flash-tensorfold.env`](config/dspark-deepseek-v4
 The adapter is
 [`scripts/DeepSeek-V41-Flash-TensorFold-Dual-DSpark.sh`](scripts/DeepSeek-V41-Flash-TensorFold-Dual-DSpark.sh).
 Raw TensorFold binds only to `127.0.0.1:8888`; the authenticated safety proxy
-exposes port 8000. The gated abliterated overlay remains disabled.
+exposes port 8000. Preparation enables Hugging Face networking only while it
+downloads the pinned artifacts; the serving containers remain offline. The
+gated abliterated overlay remains disabled.
 
 ### Qwen3.8 27B SGLang / DSpark (one DGX Spark)
 

@@ -11,7 +11,7 @@ ENV_FILE="${RECIPE}/.env"
 PROJECT_ENV_FILE="${DSV41_TF_PROJECT_ENV_FILE:-${ROOT}/.env.local}"
 
 PINNED_RECIPE_REF=31eea4608f8bb292a92e2f7a1db400e928620c78
-PINNED_MODEL_REF=6d54be4fca338d79b17c3b03cc9a423bb3ac6718
+PINNED_MODEL_REF=45ee5d0fd106c94a3d77f721e09cbb2f50e5a16b
 PINNED_ENGRAM_REF=1bae0e1088993b9b82de08f59de5be5a34e42170
 PINNED_ENGINE_REF=629c524a0ea57512a5342abb498d1b7c25353343
 PINNED_INPUTS_REF=59402086381a42c74d53053443224eec2790b4c5
@@ -100,6 +100,10 @@ validate_profile() {
   [[ "$DSV41_TF_CONTEXT" =~ ^[0-9]+$ && "$DSV41_TF_CONTEXT" -le 1048576 ]] \
     || die "Context must be an integer no greater than 1048576"
   [[ "$DSV41_TF_PARALLEL" =~ ^[1-4]$ ]] || die "Parallel streams must be between 1 and 4"
+  [[ "$DSV41_TF_PREPARE_HF_HUB_OFFLINE" =~ ^[01]$ ]] \
+    || die "Preparation HF_HUB_OFFLINE must be 0 or 1"
+  [[ "$DSV41_TF_HF_HUB_OFFLINE" =~ ^[01]$ ]] \
+    || die "Runtime HF_HUB_OFFLINE must be 0 or 1"
 }
 
 recipe_is_clean() {
@@ -220,7 +224,8 @@ check_cluster() {
 
 prepare_recipe() {
   configure_recipe
-  run_recipe ./scripts/prepare.sh "$@"
+  run_recipe env HF_HUB_OFFLINE="$DSV41_TF_PREPARE_HF_HUB_OFFLINE" \
+    ./scripts/prepare.sh "$@"
 }
 
 start_service() {

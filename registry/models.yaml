@@ -883,7 +883,7 @@ models:
     upstream_revision: 31eea4608f8bb292a92e2f7a1db400e928620c78
     upstream_license: Apache-2.0
     model_card: https://huggingface.co/Mia-AiLab/DeepSeek-V4.1-Flash-1017-EXL3-EAQ-v1-2.9-bpw
-    model_revision: 6d54be4fca338d79b17c3b03cc9a423bb3ac6718
+    model_revision: 45ee5d0fd106c94a3d77f721e09cbb2f50e5a16b
     model_license: MIT
     engram_id: deepseek-ai/DeepSeek-V4.1-Flash-1017
     engram_revision: 1bae0e1088993b9b82de08f59de5be5a34e42170

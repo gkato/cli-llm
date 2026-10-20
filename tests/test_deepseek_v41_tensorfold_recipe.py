@@ -35,7 +35,7 @@ class DeepSeekV41TensorFoldRecipeTests(unittest.TestCase):
         )
         self.assertEqual(
             profile["DSV41_TF_MODEL_REVISION"],
-            "6d54be4fca338d79b17c3b03cc9a423bb3ac6718",
+            "45ee5d0fd106c94a3d77f721e09cbb2f50e5a16b",
         )
         self.assertEqual(
             profile["DSV41_TF_ENGRAM_REVISION"],
@@ -60,6 +60,8 @@ class DeepSeekV41TensorFoldRecipeTests(unittest.TestCase):
         self.assertEqual(profile["DSPARK_PROXY_PORT"], "8000")
         self.assertEqual(profile["DSV41_TF_ABLIT"], "0")
         self.assertEqual(profile["DSV41_TF_PULL"], "0")
+        self.assertEqual(profile["DSV41_TF_PREPARE_HF_HUB_OFFLINE"], "0")
+        self.assertEqual(profile["DSV41_TF_HF_HUB_OFFLINE"], "1")
 
     def test_registry_describes_the_separate_tensorfold_backend(self):
         model = get_models()["deepseek-v4.1-flash-1017-exl3-tensorfold-dspark"]
@@ -86,6 +88,10 @@ class DeepSeekV41TensorFoldRecipeTests(unittest.TestCase):
         self.assertIn("proxy serve", script)
         self.assertIn("proxy smoke", script)
         self.assertIn("NFS_PATH=${DSV41_TF_NFS_PATH}", script)
+        self.assertIn(
+            'run_recipe env HF_HUB_OFFLINE="$DSV41_TF_PREPARE_HF_HUB_OFFLINE"',
+            script,
+        )
         for action in ("setup", "prepare", "dry-run", "start", "update", "smoke"):
             self.assertIn(action, DEEPSEEK_V41_TENSORFOLD_ACTIONS)
 
