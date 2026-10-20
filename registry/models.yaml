@@ -869,6 +869,66 @@ models:
     default_thinking: low
     cluster_profile: config/dspark-spark4e89-thinkstationpgx.env
 
+  # DeepSeek V4.1 Flash 1017 through TensorFold's native Zig engine on two
+  # linked DGX Sparks. The EXL3 checkpoint contributes the vision tower and
+  # in-checkpoint DSpark draft blocks; two unquantized base-model shards hold
+  # the Engram tables. Operate it with:
+  #   python3 -m ml.cli deepseek-v41-flash-tensorfold <action>
+  deepseek-v4.1-flash-1017-exl3-tensorfold-dspark:
+    hf_id: Mia-AiLab/DeepSeek-V4.1-Flash-1017-EXL3-EAQ-v1-2.9-bpw
+    served_model_name: DeepSeek-V4.1-Flash-1017
+    serve_backend: deepseek-v41-flash-tensorfold
+    external_recipe: scripts/DeepSeek-V41-Flash-TensorFold-Dual-DSpark.sh
+    upstream_repo: https://github.com/MiaAI-Lab/DeepSeek-v4.1-Flash-1017-2x-DGX-Sparks
+    upstream_revision: 31eea4608f8bb292a92e2f7a1db400e928620c78
+    upstream_license: Apache-2.0
+    model_card: https://huggingface.co/Mia-AiLab/DeepSeek-V4.1-Flash-1017-EXL3-EAQ-v1-2.9-bpw
+    model_revision: 6d54be4fca338d79b17c3b03cc9a423bb3ac6718
+    model_license: MIT
+    engram_id: deepseek-ai/DeepSeek-V4.1-Flash-1017
+    engram_revision: 1bae0e1088993b9b82de08f59de5be5a34e42170
+    engram_shards:
+      - model-00047-of-00048.safetensors
+      - model-00048-of-00048.safetensors
+    nodes: 2
+    tensor_parallel_size: 2
+    runtime: tensorfold-native
+    runtime_engine: zig
+    runtime_image: tensorfold-dsv41:exl3-tp2-3fd5edeb40cf
+    runtime_base_image: nvcr.io/nvidia/pytorch:26.07-py3@sha256:2140e699b3beaf7f96a0081fd9c9406bc3832b435cdb60dfa2d261f7d2f34a1c
+    engine_repo: https://github.com/bertholomus/TensorFold.git
+    engine_revision: 629c524a0ea57512a5342abb498d1b7c25353343
+    inputs_revision: 59402086381a42c74d53053443224eec2790b4c5
+    kernel_kit_repo: https://github.com/bertholomus/deepseek-v4.1-tensorfold-tp2-2xgb10.git
+    kernel_kit_revision: abe07c7d509a0199cc7fec15263be2aa52ac652f
+    architecture: deepseek_v4_1
+    quantization: exl3
+    weight_bits: 2.9
+    weights_gib: 196
+    engram_gb: 203
+    native_context_len: 1048576
+    max_model_len: 524288
+    max_num_seqs: 4
+    speculative_method: dspark
+    in_checkpoint_draft_blocks: true
+    prefill_interleave_ms: 250
+    multimodal: true
+    inputs:
+      - text
+      - image
+    tool_calling: true
+    default_thinking: true
+    raw_api_url: http://127.0.0.1:8888
+    proxy_bind: 0.0.0.0:8000
+    proxy_url: http://127.0.0.1:8000
+    disk_head_gb: 505
+    disk_worker_gb: 310
+    min_available_gib: 112
+    memguard_gib: 2.5
+    dedicated_cluster: true
+    harness_coexistence: false
+    cluster_profile: config/dspark-deepseek-v41-flash-tensorfold.env
+
   # Qwen3.8 Flash Next on two linked DGX Sparks (TP=2). MiaAI-Lab's SGLang
   # recipe supplies the SM121 QSA fallback kernel required by Qwen4Exp and
   # launches worker-first over the direct ConnectX-7 RoCE link. Operate it

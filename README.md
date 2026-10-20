@@ -15,6 +15,7 @@ API; lightweight vision detectors use a small task-specific `/v1` API:
 | **Transformers vision** | local Python process | safetensors object detectors | `vision serve <alias>` |
 | **NIM** | Docker container (TensorRT-LLM) | NVIDIA-packaged | `nim serve <alias>` |
 | **DSpark cluster** | MiaAI/Anemll vLLM on two GB10 nodes | DeepSeek V4 Flash 0731 | `dspark <action>` |
+| **DeepSeek V4.1 TensorFold** | MiaAI TensorFold native Zig TP2 on two GB10 nodes | DeepSeek V4.1 Flash 1017 EXL3 + Engram | `deepseek-v41-flash-tensorfold <action>` |
 | **Qwen Flash Next** | MiaAI SGLang TP2 on two GB10 nodes | Qwen3.8 Flash Next NVFP4 | `qwen38-flash-next <action>` |
 | **Qwen Flash Next vLLM** | Current MiaAI vLLM TP2+EP+MTP3 on two GB10 nodes | Qwen3.8 Flash Next NVFP4 | `qwen38-flash-next-vllm <action>` |
 | **GLM Flash** | Dedicated vLLM + MP TP2 on two GB10 nodes | GLM-5.3 Flash EXL3 + DFlash2 | `glm53-flash <action>` |
@@ -336,6 +337,54 @@ VLLM_BASE_URL=http://127.0.0.1:8888 \
   BENCH_LABEL=stage-c-256k scripts/bench_dspark_ab.sh full
 BENCH_LABEL=miaai-512k scripts/bench_dspark_ab.sh full
 ```
+
+### DeepSeek V4.1 Flash 1017 TensorFold (two linked DGX Sparks)
+
+This independent backend wraps [MiaAI-Lab's TensorFold native-Zig
+recipe](https://github.com/MiaAI-Lab/DeepSeek-v4.1-Flash-1017-2x-DGX-Sparks)
+at revision `31eea4608f8bb292a92e2f7a1db400e928620c78`. It serves the pinned
+2.9-bpw EXL3 checkpoint with its vision tower and in-checkpoint DSpark draft
+blocks, plus the two pinned unquantized Engram shards. The TensorFold engine,
+input tools, kernel kit, Zig toolchain, and NVIDIA arm64 base image are also
+pinned independently. The image is built locally from those inputs; mutable
+registry tags are disabled.
+
+The checked-in profile uses four streams at a practical 524,288-token ceiling,
+DSpark drafting, RoCE/RDMA, CUDA graphs, local Engram reads, interleaved long
+prefill, and the upstream memory watchdog. The model is native at 1,048,576
+tokens, but upstream measurements found 512K safer on a head also running a
+desktop and small services. Both Sparks must otherwise be dedicated to this
+backend.
+
+On the head Spark:
+
+```bash
+python3 -m ml.cli deepseek-v41-flash-tensorfold setup
+python3 -m ml.cli deepseek-v41-flash-tensorfold dry-run
+python3 -m ml.cli deepseek-v41-flash-tensorfold prepare
+python3 -m ml.cli deepseek-v41-flash-tensorfold start
+python3 -m ml.cli deepseek-v41-flash-tensorfold smoke
+```
+
+The first preparation needs approximately 505 GB on the head and 310 GB on
+the worker: 196 GiB for the EXL3 checkpoint, roughly 203 GB for Engram's two
+tables, per-rank weight files of about 106 GB, and the locally built image.
+The head's Hugging Face cache must be exported read-only to the worker over
+NFS. For this checked-in pair:
+
+```bash
+sudo apt install nfs-kernel-server
+echo '/home/northfirst/.cache/huggingface 192.168.177.11(ro,no_subtree_check)' \
+  | sudo tee -a /etc/exports
+sudo exportfs -ra
+```
+
+Machine addresses, storage paths, build pins, context, and memory guards are
+in [`config/dspark-deepseek-v41-flash-tensorfold.env`](config/dspark-deepseek-v41-flash-tensorfold.env).
+The adapter is
+[`scripts/DeepSeek-V41-Flash-TensorFold-Dual-DSpark.sh`](scripts/DeepSeek-V41-Flash-TensorFold-Dual-DSpark.sh).
+Raw TensorFold binds only to `127.0.0.1:8888`; the authenticated safety proxy
+exposes port 8000. The gated abliterated overlay remains disabled.
 
 ### Qwen3.8 27B SGLang / DSpark (one DGX Spark)
 
@@ -712,6 +761,7 @@ python3 -m ml.cli docker stop                 # dedicated vLLM image lifecycle
 python3 -m ml.cli vision stop                 # Transformers vision lifecycle
 python3 -m ml.cli nim stop                    # NIM has its own lifecycle
 python3 -m ml.cli dspark stop                 # stops both cluster nodes
+python3 -m ml.cli deepseek-v41-flash-tensorfold stop # stops V4.1 TensorFold on both nodes
 python3 -m ml.cli qwen38-flash-next stop      # stops Qwen on both cluster nodes
 python3 -m ml.cli glm53-flash stop            # stops GLM MP/vLLM on both nodes
 python3 -m ml.cli glm53-flash-tensorfold stop # stops GLM TensorFold on both nodes
@@ -804,6 +854,7 @@ tuning. A representative slice of what's registered:
 | `qwen2.5-coder-32b` (llama.cpp) | Q8_0 GGUF with `--jinja` — real tool calling for agentic coders |
 | `qwen3.8-flash-next-nvfp4-dspark` | Dual-Spark SGLang TP2, SM121 QSA + NVFP4-KV patch, 1M YaRN profile |
 | `qwen3.8-flash-next-nvfp4-vllm-dspark` | Current MiaAI dual-Spark vLLM TP2+EP+MTP3, measured BF16-KV 1M profile |
+| `deepseek-v4.1-flash-1017-exl3-tensorfold-dspark` | Dual-Spark TensorFold/Zig TP2, EXL3 + Engram, safe 512K profile |
 | `glm-5.3-flash-nvfp4-dspark` | Legacy key for dual-Spark EXL3 E3/MP TP2 + DFlash2, 384K safe profile |
 | `deepseek-v4-flash-0731-dspark-one` | One-Spark TP=1 EXL3 recipe, 384K single-request profile |
 
@@ -1222,6 +1273,7 @@ ml-compute/
 │   └── apis.yaml               Hosted-provider model lists (teacher models)
 ├── config/
 │   ├── dspark-spark4e89-thinkstationpgx.env   dual-Spark DeepSeek profile
+│   ├── dspark-deepseek-v41-flash-tensorfold.env dual-Spark DeepSeek V4.1 TensorFold profile
 │   ├── dspark-qwen38-flash-next-nvfp4.env     dual-Spark Qwen 1M NVFP4-KV profile
 │   ├── dspark-qwen38-flash-next-vllm.env      current MiaAI Qwen vLLM performance profile
 │   ├── dspark-glm53-flash-nvfp4.env            dual-Spark GLM EXL3 E3 384K safe profile (legacy name)
@@ -1231,6 +1283,7 @@ ml-compute/
 ├── Makefile.qwen{,9b}          QLoRA recipes for a 32 GB RTX PRO 4500 box
 ├── scripts/
 │   ├── DS4-Flash-DSpark.sh         dual-Spark DeepSeek lifecycle
+│   ├── DeepSeek-V41-Flash-TensorFold-Dual-DSpark.sh dual-Spark V4.1 TensorFold lifecycle
 │   ├── Qwen38-Flash-Next-Dual-DSpark.sh dual-Spark Qwen lifecycle
 │   ├── start-Qwen38-Flash-Next-Dual-DSpark.sh Qwen first-run/start wrapper
 │   ├── Qwen38-Flash-Next-vLLM-Dual-DSpark.sh current MiaAI Qwen vLLM lifecycle

@@ -71,6 +71,12 @@ COMMON WORKFLOWS
     ml.cli dspark start                   # worker-first TP=2 launch
 
 \b
+  Two-node TensorFold serving (DeepSeek V4.1 Flash 1017 EXL3):
+    ml.cli deepseek-v41-flash-tensorfold setup   # pin/configure and check both nodes
+    ml.cli deepseek-v41-flash-tensorfold prepare # build + stage model/Engram data
+    ml.cli deepseek-v41-flash-tensorfold start   # native Zig TP=2 + safety proxy
+
+\b
   Two-node SGLang serving (Qwen3.8 Flash Next NVFP4):
     ml.cli qwen38-flash-next setup        # pin/configure and check both nodes
     ml.cli qwen38-flash-next download     # patch images + mirror model weights
@@ -126,13 +132,14 @@ def cli():
     """ml-compute — OpenAI-compatible local and clustered inference.
 
     \b
-    Ten serving backends behind a single CLI:
+    Serving backends behind a single CLI:
       • vLLM      pip-installed Python process, safetensors →  `ml.cli serve <alias>`
       • llama.cpp local llama-server process, GGUF          →  `ml.cli serve llama <id>`
       • Docker    dedicated vLLM image from model registry  →  `ml.cli docker serve <alias>`
       • Vision    Transformers object detection             →  `ml.cli vision serve <alias>`
       • NIM       NVIDIA TensorRT-LLM container, Docker      →  `ml.cli nim serve <alias>`
       • DSpark    patched Docker vLLM, two GB10 nodes, TP=2  →  `ml.cli dspark <action>`
+      • DeepSeek V4.1 TensorFold/Zig, two GB10 nodes, TP=2    →  `ml.cli deepseek-v41-flash-tensorfold <action>`
       • Qwen Next patched SGLang, two GB10 nodes, TP=2       →  `ml.cli qwen38-flash-next <action>`
       • Qwen Next MiaAI vLLM+EP, two GB10 nodes, TP=2        →  `ml.cli qwen38-flash-next-vllm <action>`
       • GLM Flash MiaAI-patched vLLM, two GB10 nodes, TP=2   →  `ml.cli glm53-flash <action>`
@@ -1021,6 +1028,50 @@ def dspark_cmd(action: str):
     script = Path(__file__).resolve().parent.parent / "scripts" / "DS4-Flash-DSpark.sh"
     if not script.is_file():
         raise click.ClickException(f"DSpark recipe not found: {script}")
+    result = subprocess.run([str(script), action], check=False)
+    raise click.exceptions.Exit(result.returncode)
+
+
+# ---------------------------------------------------------------------------
+# DeepSeek V4.1 Flash 1017 — TensorFold native Zig TP=2 recipe
+# ---------------------------------------------------------------------------
+
+DEEPSEEK_V41_TENSORFOLD_ACTIONS = [
+    "bootstrap", "update", "configure", "check", "setup", "prepare",
+    "download", "build", "dry-run", "start", "restart", "stop", "status",
+    "memory", "logs", "logs-worker", "smoke", "all", "path", "help",
+]
+
+
+@cli.command("deepseek-v41-flash-tensorfold")
+@click.argument(
+    "action",
+    required=False,
+    default="help",
+    type=click.Choice(DEEPSEEK_V41_TENSORFOLD_ACTIONS, case_sensitive=False),
+)
+def deepseek_v41_flash_tensorfold_cmd(action: str):
+    """Manage DeepSeek V4.1 Flash 1017 on two linked DGX Sparks.
+
+    \b
+    This wraps MiaAI-Lab's TensorFold native-Zig TP=2 recipe with immutable
+    source/model/build pins, a practical 524K context profile, and the raw API
+    on loopback behind ml-compute's authenticated safety proxy.
+
+    \b
+    Typical sequence:
+      ml.cli deepseek-v41-flash-tensorfold setup
+      ml.cli deepseek-v41-flash-tensorfold prepare
+      ml.cli deepseek-v41-flash-tensorfold start
+      ml.cli deepseek-v41-flash-tensorfold smoke
+    """
+    script = (
+        Path(__file__).resolve().parent.parent
+        / "scripts"
+        / "DeepSeek-V41-Flash-TensorFold-Dual-DSpark.sh"
+    )
+    if not script.is_file():
+        raise click.ClickException(f"DeepSeek V4.1 TensorFold recipe not found: {script}")
     result = subprocess.run([str(script), action], check=False)
     raise click.exceptions.Exit(result.returncode)
 
