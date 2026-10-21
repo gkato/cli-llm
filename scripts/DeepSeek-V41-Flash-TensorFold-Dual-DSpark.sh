@@ -8,6 +8,7 @@ PROFILE="${DSV41_TF_CONFIG_FILE:-${ROOT}/config/dspark-deepseek-v41-flash-tensor
 RUNTIME="${DSV41_TF_RUNTIME_DIR:-${ROOT}/data/dspark/deepseek-v41-flash-tensorfold}"
 RECIPE="${DSV41_TF_RECIPE_DIR:-${RUNTIME}/recipe}"
 ENV_FILE="${RECIPE}/.env"
+PATCHED_START="${RECIPE}/.ml-compute-start.sh"
 PROJECT_ENV_FILE="${DSV41_TF_PROJECT_ENV_FILE:-${ROOT}/.env.local}"
 
 PINNED_RECIPE_REF=31eea4608f8bb292a92e2f7a1db400e928620c78
@@ -134,6 +135,29 @@ check_recipe_pin() {
   recipe_is_clean || die "Recipe has local tracked changes; preserving them"
 }
 
+write_nvidia_launcher() {
+  local source="${RECIPE}/start.sh" tmp matches
+  [[ -f "$source" ]] || die "Missing upstream launcher: $source"
+  matches=$(grep -c '^RUN_ARGS=.*--gpus all' "$source" || true)
+  [[ "$matches" == 1 ]] \
+    || die "Upstream Docker launcher changed; review the NVIDIA runtime adapter"
+  tmp="$(mktemp "${PATCHED_START}.XXXXXX")"
+  awk '
+    /^RUN_ARGS=.*--gpus all/ {
+      print "# ml-compute: GB10 CUDA compatibility runtime (driver 580 + CUDA 13.x image)."
+      sub(/--gpus all/, "--runtime=nvidia -e NVIDIA_VISIBLE_DEVICES=all -e NVIDIA_DRIVER_CAPABILITIES=compute,utility")
+    }
+    { print }
+  ' "$source" >"$tmp"
+  grep -q -- '--runtime=nvidia' "$tmp" \
+    && grep -q -- 'NVIDIA_VISIBLE_DEVICES=all' "$tmp" \
+    && grep -q -- 'NVIDIA_DRIVER_CAPABILITIES=compute,utility' "$tmp" \
+    && ! grep -q -- '--gpus all' "$tmp" \
+    || { rm -f "$tmp"; die "Could not generate the NVIDIA runtime launcher"; }
+  chmod 0755 "$tmp"
+  mv "$tmp" "$PATCHED_START"
+}
+
 configure_recipe() {
   local tmp
   validate_profile
@@ -202,6 +226,7 @@ API_KEY=0
 EOF
   chmod 0600 "$tmp"
   mv "$tmp" "$ENV_FILE"
+  write_nvidia_launcher
   log "Configured pinned recipe at $RECIPE"
 }
 
@@ -234,9 +259,9 @@ start_service() {
   check_proxy_key
   proxy stop || true
   if [[ "$mode" == restart ]]; then
-    run_recipe ./start.sh restart
+    run_recipe "$PATCHED_START" restart
   else
-    run_recipe ./start.sh
+    run_recipe "$PATCHED_START"
   fi
   proxy serve
   proxy smoke
@@ -261,7 +286,7 @@ case "$action" in
   setup) sync_recipe; configure_recipe; check_cluster ;;
   prepare|download) prepare_recipe ;;
   build) prepare_recipe --rebuild ;;
-  dry-run) configure_recipe; run_recipe env DRY_RUN=1 ./start.sh ;;
+  dry-run) configure_recipe; run_recipe env DRY_RUN=1 "$PATCHED_START" ;;
   start) start_service start ;;
   restart) start_service restart ;;
   stop) proxy stop || true; check_recipe_pin; run_recipe ./stop.sh ;;

@@ -386,7 +386,9 @@ The adapter is
 Raw TensorFold binds only to `127.0.0.1:8888`; the authenticated safety proxy
 exposes port 8000. Preparation enables Hugging Face networking only while it
 downloads the pinned artifacts; the serving containers remain offline. The
-gated abliterated overlay remains disabled.
+adapter also generates an untracked launcher using Docker's explicit NVIDIA
+runtime for the GB10/CUDA 13 combination, without modifying the pinned upstream
+checkout. The gated abliterated overlay remains disabled.
 
 ### Qwen3.8 27B SGLang / DSpark (one DGX Spark)
 
